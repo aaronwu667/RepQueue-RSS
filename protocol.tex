@@ -19,41 +19,42 @@
 \par Performance wise, we strive to achieve \emph{high throughput}, minimizing the overhead imposed by providing the invocation-order guarantee. Following the approach of Calvin, we ``determinize'' the order of transactions through a shared log, eliminating reliance on concurrency control mechanisms in the common case. We also emphasize \emph{data durability}; once returned to the client, a transaction will not be lost unless an improbable number of service components fail. 
 
 \section{Client-Service Interaction}
-\par Clients establish a session with the service using a local library, through which all interactions occur. The client-side library transparently maintains this session and retries requests without the need for user intervention. Clients may have multiple outstanding transaction requests and can expect that the resulting execution preserves invocation order. Read-only transactions are automatically assigned a sequence number respecting real-time invocation order, which we call a CRSN (client read-only sequence number). Similarly, read-write transactions and write-only transactions are stamped with a CWSN (client write sequence number). Both CRSNs and CWSNs are composed of a unique client identifier, $cid$, and a number $num \in \mathbb{N}$ i.e. $(cid, 0), (cid, 1), (cid, 2),...$ where $(cid, 0) < (cid, 1) < (cid, 2) < ...$ with respect to invocation order.
+\par Clients establish a session with the service using a local library, through which all interactions occur. The client-side library transparently maintains this session without the need for user intervention. Clients may have multiple outstanding transaction requests and can expect that the resulting execution preserves invocation order. Read-only transactions are automatically assigned a sequence number respecting real-time invocation order, which we call a CRSN (client read-only sequence number). Similarly, read-write transactions and write-only transactions are stamped with a CWSN (client write sequence number). Both CRSNs and CWSNs are composed of a unique client identifier, $cid$, and a number $num \in \mathbb{N}$ i.e. $(cid, 0), (cid, 1), (cid, 2),...$ where $(cid, 0) < (cid, 1) < (cid, 2) < ...$ with respect to invocation order.
 \section{System Assumptions and Design Overview}
 \par In our system, all transactions are handled by a transaction manager, which is a collection of servers ordered to form a chain. This manager communicates with shard groups to durably store data. Each shard group is a multi-versioned, linearizable, storage service. Only read-write transactions are replicated in the manager chain, and clients can open a session with any manager server \textit{except for} the head and tail. 
 \par Assume the transaction manager consists of $n$ servers and data is split among $m$ shard groups. Uniquely identify each node in the chain with an index $i \in [1,n]$ based on their location. That is, the head of chain is $1$; the tail is $n$; and the successor of any other node $i$ in the chain is $i+1$. We also label each shard group with some unique $j \in [1, m]$. Figure 1 outlines the data structures present on service nodes and client sessions. 
 \par As in Chain Replication and CRAQ, we assume the transaction manager servers are fail-stop. We also assume the presence of a failure detector for the chain and a coordination service, which maintains the mapping from shards to keyspaces. We will refer to this mapping as $sh(\cdot)$. Our network model is asynchronous, and messages can be dropped, delivered out of order, or both. 
-\par Read-write transactions start as $PreCommit$ at the head of the chain and are replicated at successive nodes. Once the tail appends a transaction to its log, the transaction is considered committed, and its constituent sub-transactions sent to the relevant shard groups for execution. Completion of sub-transactions are sent to the chain tail. After the tail learns that all of these are complete, a command to transition the transaction to $Executed$ is sent backwards through the chain. A transaction whose status changes to $Executed$ on the head node subseqeuntly has its completion returned to the client.
+\par Read-write transactions start as $PreCommit$ at the head of the chain and are replicated at successive nodes. Once the tail appends a transaction to its log, the transaction is considered committed, and its constituent sub-transactions sent to the relevant shard groups for execution. Completion of sub-transactions are sent to the chain tail. After the tail learns that all of these are complete, a command to transition the transaction to $Executed$ is sent backwards through the chain. A transaction whose status changes to $Executed$ on the head node subsequently has its completion returned to the client.
 \par The rest of this specification is as follows. We will detail the protocol for write-only and read-only transactions. Then, we describe how read-only and dependent read-only transactions are reduced to the case of write-only transactions. 
-\par As a notational convention, we will take superscript ``write'' to denote the write key-set and superscript ``read'' to denote the read key-set of a transaction.
+\par As a notational convention, we will take superscript ``write'' to denote the write key-set and superscript ``read'' to denote the read key-set of a transaction. For maps, superscript ``key'' represents the domain of the map and ``value'' to be its range. On maps or sets whose keys admit an ordering, let $\max(\cdot)$ and $\min(\cdot)$ have their usual meaining. If the map or set $S$ is empty, then both $\max(S), \min(S)$ equal $-1$. 
 \begin{figure}[H]
-  \vspace*{-2em}
+  \vspace*{-2.5em}
   \centering
 \begin{tcolorbox}[title= On \textbf{transaction manager node} $i$, enhanced, width=1.05\textwidth, left skip=-0.5cm, colback=black!4!white]  
 \begin{enumerate}[itemsep=1pt]
 \item \underline{Write-ahead log of read-write transactions, $\mathcal{L}_i$}: All entries on the log have a sequence number, which doubles as an index into the log, and have a type of $PreCommit$, $Executed$, or $Abort$. We defer discussion of these types to the protocol description. For convenience, let $\tilde{\mathcal{L}_i}$ denote the subhistory (not necessarily suffix) consisting of $PreCommit$ entries and $\tilde{\mathcal{L}_i}|j$ denote the subhistory of $PreCommit$ entries that affect keys belonging to shard group $j$. Observe that $\tilde{\mathcal{L}_i}|j \subseteq \tilde{\mathcal{L}_i}$ and  \begin{equation*}
     order\left(\tilde{\mathcal{L}_i}|j \right) \subseteq order\left(\tilde{\mathcal{L}_i} \right)\subseteq order(\mathcal{L}_i)
   \end{equation*}
-  as a consequence of these definitions.\footnote{Here, $order(S)$ is the assumed total order over $S$ -- a distinguished subset of $S \times S$ that satisfies the usual axioms. The natural order on log sequence numbers, inherited from $\mathbb{N}$, induces all orderings we consider herein.}
+  as a consequence of these definitions.\footnote{Here, $order(S)$ is the assumed total order over $S$ -- a distinguished subset of $S \times S$ that satisfies the usual axioms. The natural order on sequence numbers, inherited from $\mathbb{N}$, induces all orderings we consider herein.}
 \item \underline{FIFO queue for each shard group $j$, $Q_i|j$}: Each queue is maintained so that its contents and order are exactly the sequence numbers of $\tilde{\mathcal{L}_i}|j$. Additionally, each queue tracks the log sequence number of the most recently dequeued entry, which we will write as $exec(Q_i|j)$.
-\item \underline{Map from $PreCommit$ transactions to shards, $C_i$}: Any given $PreCommit$ transaction $T \in \mathcal{L}$ is viewed as a collection of disjoint sub-transactions $\{T|j_p\}_{p=1}^k$, where $k \leq m$ and $T|j_p$ is the subset of writes in $T$ that only mutate the state of shard $j_p$. This map stores bindings of the form $T.sn \mapsto (shds, cwsn)$, where $shds  :=\{j_1,...,j_k\}$ and $cwsn$ is the associated CWSN. For a given $PreCommit$ transaction, $shds$ informs us which participating shard groups have not yet executed the necessary writes. The $cwsn$ enables the update of transaction status in item 5. 
+\item \underline{Map from $PreCommit$ transactions to shards, $C_i$}: Any given $PreCommit$ transaction $T \in \mathcal{L}$ is viewed as a collection of disjoint sub-transactions $\{T|j_p\}_{p=1}^k$, where $k \leq m$ and $T|j_p$ is the subset of writes in $T$ that only mutate the state of shard $j_p$. This map stores bindings of the form $T.sn \mapsto (shds, cwsn)$, where $shds  :=\{j_1,...,j_k\}$ and $cwsn$ is the associated CWSN. For a given $PreCommit$ transaction, $shds$ informs us which participating shard groups have not yet executed the necessary writes, and the $cwsn$ enables the update of transaction status in item 5. 
 \item \underline{Map from shards to sequence number, $SSN_i$}: In the same way that the client library appends each outgoing transaction with either a CWSN or CRSN, the manager nodes increment $SSN$ on every insert into $Q_i|j$. 
-\item \underline{Map from CWSNs to transactions, $W_i$}: This associates CWSNs with either their corresponding ongoing write or write response that has not been acknowledged. Write $W_i^{\text{key}}$ to represent the domain (keys) of the mapping and $W_i^{\text{value}}$ be the range. Define $W_i^{\text{key}}|cid$ as the maximal subset of $W_i^{\text{key}}$ such that all of its elements have prefix $cid$, and let $\max(W_i^{\text{key}}|cid)$ be its maximal element with respect to the ordering on CWSNs. If $W_i^{\text{key}}|cid = \emptyset$, then $\max(W_i^{\text{key}}|cid) = -1$. This additional per-client bookkeeping is essential to guaranteeing exactly-once semantics in the presence of server failures and message loss (\S \ref{wotxn}).
-\item \underline{Map from $cid$s to log sequence numbers, $R_i$}: As we will see in \S \ref{rotxn}, this other form of per-client metadata is used for preserving the invocation-order for reads. 
+\item \underline{Map from CWSNs to transactions, $W_i$}: This associates CWSNs with either their corresponding ongoing write or write response that has not been acknowledged. Define $W_i^{\text{key}}|cid$ as the maximal subset of $W_i^{\text{key}}$ such that all of its elements have prefix $cid$. This additional per-client bookkeeping is essential to guaranteeing exactly-once semantics in the presence of server failures and message loss (\S \ref{wotxn}).
+\item \underline{Map from $cid$s to $(maxNum, lsn)$ tuple, $R_i$}: The component $maxNum$ is the highest CSRN $num$ seen from client $cid$, and $lsn$ is a log sequence number. As we will see in \S \ref{rotxn}, this other form of per-client metadata is used for preserving the invocation-order for reads when messages arrive out of order. 
 \end{enumerate}
 \end{tcolorbox}
 \begin{tcolorbox}[title= On \textbf{shard group} $j$, enhanced,width=1.05\textwidth, left skip=-0.5cm, colback=black!4!white]
 \begin{enumerate}[itemsep=1pt]
-\item \underline{Log sequence number of the most recently completed sub-transaction, $shExec(j)$}: This is analous to the queues and $exec(\cdot)$ in the transaction manager nodes. 
+\item \underline{Log sequence number of the most recently completed sub-transaction, $shExec(j)$}: This is analogous to the queues and $exec(\cdot)$ in the transaction manager nodes. 
 \item \underline{Local sequence number, $ssn_j$}: After the completion of any sub-transaction $T|j$, the shard group increments $ssn_j$. 
 \end{enumerate}
 \end{tcolorbox}
 \begin{tcolorbox}[title= On \textbf{client} $cid$, enhanced,width=1.05\textwidth, left skip=-0.5cm, colback=black!4!white]
   \begin{enumerate}[itemsep=1pt]
-  \item \underline{Greatest assigned CWSN and CRSN, $cwsn_{\max}$ and $crsn_{\max}$}: These are incremented accordingly as the client submits transactions.
-  \item \underline{Ordered set of CWSNs assigned to outstanding transactions, $InProg_{cid}$:} This allows computation of the largest CWSN such that all transactions with lower CWSNs have recieved responses (\S \ref{wotxn}). Set elements are removed on receiving responses. 
-  \item \underline{Ordered map from CRSNs to log sequence numbers, $UB_{cid}$}: This is a set of upper bounds that ensure the results of a retried read-only transaction do not violate invocation ordering (\S \ref{rotxn}). As above, the client library prunes this map appropriately as it recieves responses from the service. 
+  \item \underline{Greatest assigned CWSN and CRSN, $cwsn_{\max}$ and $crsn_{\max}$}: These are incremented accordingly as the client submits transactions (\S \ref{wotxn}, \ref{rotxn}).
+  \item \underline{Ordered set of CWSNs assigned to outstanding transactions, $InProg_{cid}$:} This allows computation of the largest CWSN such that all transactions with lower CWSNs have received responses (\S \ref{wotxn}). Set elements are removed on receiving responses. 
+  \item \underline{Ordered map from CRSNs to log sequence numbers, $UB_{cid}$}: This is a set of upper bounds that ensure the results of a retried read-only transaction do not violate invocation ordering (\S \ref{rotxn}). As above, the client library prunes this map appropriately as it receives responses from the service.
+  \item \underline{Map from CRSNs to response data, $ReadResult_{cid}$}: This map is of the form $\{crsn_T \mapsto (num, data, lsn)\}$, where $num$ is the number of participating shards, $data$ contains response data, and $lsn$ is the read's log sequence number constraint (\S \ref{rotxn}). 
   \end{enumerate}
 \end{tcolorbox}
 \caption{Data structures on transaction manager, shard group servers, and clients}
@@ -64,7 +65,8 @@
 
 \newpage
 \section{Write-Only Transactions} \label{wotxn}
-\par We start with the special case of write-only transactions. First, clients invoke $\text{SessionRuntimeAppend}$. \\
+% Should probably write out description in text at some point
+\par First, the client invokes $\text{SessionRuntimeAppend}$ through a wrapper API, which handles timeout and retries. \\
 \begin{procedure}[H]
   \caption{SessionRuntimeAppend($T$, $isRetry$, $cwsn_T$ $|$   null)}
   \tcp{SessionRuntimeAppend on client $cid$}
@@ -72,16 +74,10 @@
     $cwsn_{\max} := cwsn_{\max} + 1$ \\
     $cwsn_T := cwsn_{\max}$\\
   }
-  $ackBound := \min(InProg_{cid})$ \\
+  $ackBound := \min(InProg_{cid})$ \\ % Could optimize this to clean specific intervals
   $\text{Send}_{\text{head}}(\text{AppendTransact}, \{T, cwsn_T, ackBound\})$ \tcp{all writes go to head of chain} 
   \textbf{return} $cwsn_T$
 \end{procedure}
-% TODO rewrite 
-% Along with the transaction $T$ itself, the client library includes
-% \begin{itemize}
-% \item The transaction CWSN -- $cswn_T$
-% \item The largest CWSN such that all transactions with lower CSWNs have recieved responses -- $ackBound$
-% \end{itemize}
 Note the variables $cwsn_T$ and $ackBound$. The first of these two guarantees execution preserves invocation order in spite of message reordering, while the second enables the transaction manager to garbage collect no-longer-needed metadata. Additionally, $cwsn_T$ is returned to the client for any possible retries. \\
 \begin{procedure}[H]
   \SetKwFor{Match}{match}{with:}{end}
@@ -89,38 +85,38 @@ Note the variables $cwsn_T$ and $ackBound$. The first of these two guarantees ex
   \tcp{AppendTransact on transaction manager node $i \in [1, n]$} 
   \uIf{$cwsn_T \leq \max(W_i^{\text{key}}|cid)$}{
     \tcp{$W_i[cwsn_T]$ has variant type $\text{resp}|\text{uint}$}
-    \Match{$(i, W_i[cwsn_T])$}{ 
-      $(1, resp) \implies \text{Send}_{\text{cid}}(\text{SessionResp}, \{resp\})$\tcp{handle case when $i$ is head}
-      $(\_, \_) \implies  \text{\textbf{return }}$
+    \uIf{\upshape $i = 1 \wedge W_i[cwsn_T] = \text{resp}\{\text{STATUS}\}$}{
+      $\text{Send}_{\text{cid}}(\text{SessionResp}, \{\text{STATUS}\})$\tcp{handle case when $i$ is head}
     }
+    \textbf{return}    
   } \Else {
     \textbf{wait} until $\max(W_i^{\text{key}}|cid).num + 1 = cwsn_T.num$     \tcp{prevent reordering} 
   }
-  ind := $\mathcal{L}_i.len$ \\
+  $\text{ind}:=\mathcal{L}_i.len$ \\
   $\mathcal{L}_i \leftarrow T$ \\
   $W_i := W_i \cup \{ cwsn_T \mapsto \text{ind}\}$ \\
   $C_i := C_i \cup \left \{ind \mapsto (cwsn_T, \{ \}) \right \}$ \\
   \ForEach{$j\in[1,m]$}{
-    particip := $T^{\text{write}} \cap sh(j)$\\
-    \uIf{\upshape particip $\neq \emptyset$}{$Q_i|j \leftarrow \text{ind}$ \\
+    $\text{particip} := T^{\text{write}} \cap sh(j)$\\
+    \uIf{\upshape $\text{particip} \neq \emptyset$}{$Q_i|j \leftarrow \text{ind}$ \\
       $SSN[j] := SSN[j] + 1$\\
       $C_i[\text{ind}].shds := C_i[\text{ind}].shds \cup \{j\}$ 
     }
   }
   \uIf{$i = n$}{ 
     \ForEach{\upshape$j \in C_i[\text{ind}]$}{
-      $\text{Send}_{j}(\text{ShardExec}, \{T|j, \text{ind}, SSN[j]\})$ 
+      $\text{Send}_{j}(\text{ShardExecAppend}, \{T|j, \text{ind}, SSN[j]\})$ 
     }
   } \Else {
     $\text{Send}_{\text{succ}}(\text{AppendTransact}, \{T, cwsn_T\})$ 
   }
-  $W_i := W_i \setminus \{W_i[k] : k \in W_i^{\text{key}} \wedge k < ackBound\}$  \tcp{remove unneeded metadata} 
+  $W_i := W_i \setminus \{ (k \mapsto W_i[k]) \in W_i : k < ackBound\}$  \tcp{remove unneeded metadata} 
   \textbf{return}
 \end{procedure}
 \par The check in lines 2-5 is necessary, as a dropped response message can lead to multiple client retries. If the service indiscriminately performs these retries, the resulting execution history might not admit a valid total ordering. 
-\par Once the transaction is replicated on the tail node, it is sent to the shard groups for execution using $\text{ShardExec}$. To reduce the size of network messages, only the relevant sub-transaction is transmitted to each participating shard. Similar to before, a shard-specific sequence number $sn$ is also included. Retries are piggybacked on subsequent invocations or sent after a preset timeout, whichever happens first. \\
+\par Once the transaction is replicated on the tail node, it is sent to the shard groups for execution using $\text{ShardExecAppend}$. To reduce the size of network messages, only the relevant sub-transaction is transmitted to each participating shard. Similar to before, a shard-specific sequence number $sn$ is also included. Retries are piggybacked on subsequent invocations or sent after a preset timeout, whichever happens first. \\
 \begin{procedure}[H]
-  \caption{ShardExec($T|j$, $ind$, $sn$)}
+  \caption{ShardExecAppend($T|j$, $ind$, $sn$)}
   \tcp{ShardExec on shard group $j \in [1, m]$}
   \uIf{$sn \leq ssn_j$}{
     \textbf{return}
@@ -148,18 +144,18 @@ Note the variables $cwsn_T$ and $ackBound$. The first of these two guarantees ex
   }
   \textbf{return}
 \end{procedure}\hfill 
-\noindent\par The tail listens to shard group replies through $\text{ExecNotif}$ and updates its $C_{n}$. After all sub-transactions are finished, transaction completion is propagated backwards to the head through $\text{TransactExec}$. For each participating shard queue, elements are deqeued up to and including the completed transaction index. This ensures an updated view of all execution statuses, which is critical for correctly serving reads. When the head is done updating its queues, the response is returned to the client session.\\
+\noindent\par The tail listens to shard group replies through $\text{ExecNotif}$ and updates its $C_{n}$. After all sub-transactions are finished, transaction completion is propagated backwards to the head through $\text{ExecAppendTransact}$. For each participating shard queue, elements are deqeued up to and including the completed transaction index. This ensures an updated view of all execution statuses, which is critical for correctly serving reads. When the head is done updating its queues, the response is returned to the client session.\\
 \begin{procedure}[H]
-  \caption{TransactExec($ind$)}
+  \caption{ExecAppendTransact($ind$)}
   \tcp{TransactExec on node $i \in [1, n]$}
   $cwsn := C_i[ind].cwsn$\\
   \ForEach{$j \in C_i[ind].shds$}{
-    deq $\leftarrow Q_i|j$ \\
+    $\text{deq} \leftarrow Q_i|j$ \\
     \While{deq $\neq ind$}{
-      deq $\leftarrow Q_i | j$
+      $\text{deq} \leftarrow Q_i | j$
     }
   }
-  $C_i := C_i \setminus C_i[ind]$\\ 
+  $C_i := C_i \setminus \{ind \mapsto C_i[ind] \}$\\ 
   $W_i[cwsn] := \text{resp}\{\text{SUCCESS}\}$\\
   \uIf{$i=1$}{
     $\text{Send}_{\text{cwsn}.cid}(\text{SessionRespWrite}, \{cwsn, W_i[cwsn]\})$
@@ -178,29 +174,111 @@ Note the variables $cwsn_T$ and $ackBound$. The first of these two guarantees ex
 \newpage
 \section{Read-Only Transactions} \label{rotxn}
 % \par In contrast with write-only transactions, there is no data structure tracking read-only transactions on the transaction manager nodes. Moreover, client sessions . As such, the client-side library plays a non-trivial role in ensuring correctness.
- $\text{SessionRuntimeRead}$ in the client-side library is called on every read-only transaction, including retries.   \\
+ $\text{SessionRuntimeRead}$ in the client-side library is called on every read-only transaction, including retries. Responses include the log sequence number used in executing the read. \\
 \begin{procedure}[H]
   \caption{SessionRuntimeRead($T$, $isRetry$, $crsn_T$ $|$ null)}
   \tcp{SessionRuntimeRead on client $cid$, connected to manager node $i$}
-  $lsnConst := \emptyset$\\
-  \uIf{$\neg isRetry$}{
+  $writeDep, lsnConst := -1$ \\
+  $isRetry := False$   \\
+  \uIf{$InProg_{cid} \neq \emptyset$}{
+    $writeDep := \max(InProg_{cid})$
+  }
+  \tcp{Compute invocation order constraints}
+  \uIf{$crsn_T = \text{null}$}{
     $crsn_{\max} := crsn_{\max} + 1$ \\
     $crsn_T := crsn_{\max}$\\
-  } \Else{
-    ubKey $:= \min\{ x \in UB_{cid}^{\text{key}} : crsn_T\leq x\}$\\
-    $lsnConst := \{UB_{cid}[\text{ubKey}]\}$
+    $ReadResult_{cid} := ReadResult_{cid} \cup \{ crsn_T \mapsto (-1, \{ \}, lsnConst)\}$\\
+    \uIf{$|ReadResult_{cid}| > 1$}{$UB_{cid} := UB_{cid} \cup \{crsn_T\mapsto \text{null} \}$}
+  } \Else {
+    $isRetry := True$ \\
+    \tcp{Check existence of upper bound} 
+    $\text{ubKey} := \min\{ x \in UB_{cid}^{\text{key}} : crsn_T\leq x \wedge UB_{cid}[x] \neq \text{null}\}$ \\
+    \uIf{\upshape$\text{ubKey}\neq \text{null}$}{
+      $lsnConst := UB_{cid}[\text{ubKey}]$ 
+    }
+    $ReadResult_{cid}[crsn_T] := (-1, \{ \}, lsnConst)$ \tcp{throw away partially completed read}
   }
-  $lsnConst := lsnConst \cup \{ \}$ \\
-  $ackBound := \min(InProg_{cid})$ \\
-  $\text{Send}_{i}(\text{ReadOnlyTransact}, \{T, crsn_T, ackBound, lsnConst\})$ \\
+  $ackBound := \min(InProg_{cid})$ \tcp{also piggyback write acknowledgements on reads}
+  $\text{Send}_{i}(\text{ReadOnlyTransact}, \{T, isRetry, crsn_T, ackBound, writeDep, lsnConst\})$ \\
   \textbf{return} $crsn_T$
 \end{procedure}
-Like write-only transactions, an $ackBound$ notifies the service which responses the client has successfully recieved. Every 
+The utility of $crsn_T$ and $ackBound$ are the same as in write-only transactions. For every read-only transaction, $writeDep$ captures dependency on the most recent ongoing write. This is not required in all cases. If the write key-set of all ongoing transactions are known, a dependency need only be declared on the latest transaction $X$ such that $X^{\text{write}} \cap T^{\text{read}} \neq \emptyset$. Unfortunately, this optimization is not always possible due to the way we handle read-write and dependent transactions (\S\ref{deptxn}). \\
+\begin{procedure}[H]
+  \caption{SessionRespRead($crsn_T$, $fence$, $data$, $numShards$)}
+  \tcp{SessionRespRead on client $cid$}
+  $(\text{currNum}, \text{currData}, \text{currLsn}) := ReadResult_{cid}[crsn_T]$ \\
+  \uIf{\upshape $\text{currLsn} = -1 \lor \text{currLsn} = fence$}{
+    \uIf{\upshape$ \text{currNum} = -1$}{
+      $\text{currNum} := numShards$
+    } 
+    $\text{currNum} := \text{currNum} - 1$\\
+    $\text{currData} := \text{currData} \cup \{data\}$ \\
+    \tcp{Recieved data from all shards, so can return to client}  
+    \uIf{\upshape $\text{currNum} = 0$}{
+      $ReadResult_{cid} := ReadResult_{cid} \setminus \{ crsn_T \mapsto ReadResult_{cid}[crsn_T]\}$ \\
+      \uIf{\upshape $crsn_T \in UB_{cid}^{\text{key}}$}{
+        $UB_{cid}[crsn_T] := lsn$\\
+        \uIf{$crsn_T \neq crsn_{\max}$}{
+          $UB_{cid} := UB_{cid}\setminus \{(crsn_T + 1) \mapsto UB_{cid}[crsn_T + 1]\}$
+        }
+      }
+      \textbf{return} $data$
+    } \Else{
+      $ReadResult_{cid}[crsn_T] := (\text{currNum}, \text{currData}, \text{currLsn})$
+    }
+  }
+\end{procedure}
+\par For retries, the client session must also explicitly provide an upper bound on freshness, $lsnConst$, to the transaction manager node. Otherwise, a retry could return information newer than that of later reads, with respect to invocation order. Consider the set of completed read-only transactions with CRSN greater than $crsn_T$. We take $lsnConst$ as the log sequence number contained in the response to the minimal element of this set. That is, $lsnConst$ can be thought of as the \underline{least} upper bound on freshness. In practice, we do not track all completed read-only transactions. The set $UB_{cid}$ only contains least upper bounds, which corresponds to transactions whose immediate predecessors have not yet received a response (lines 4-5 of SessionRespRead). 
+\par Once a read is retried, responses matching the original invocation must be discarded. Again, this is needed to prevent more recent invocations from matching with a response containing data more stale than older invocations. Observe that this scheme can potentially lead to a large amount of unneccesary, cascading retries. For example, responses for a large set of read transactions may arrive just after all retries are sent out, thereby invalidating their content. However, we expect that manifestation of these behaviors is highly unlikely, assuming a resonable timeout value. 
+\par Based on the status of their queues, transaction manager nodes compute a consistent read across shards subject to the client library's $writeDep$ and $lsnConstr$ constraints. This consistent read can be visualized as a ``fence'' that cuts across the manager's queues. \\
+% TODO: handle ackBound and send forwards/backwards through chain for cleanup
+\begin{procedure}[H]
+  \caption{ReadOnlyTransact($T$, $isRetry$, $crsn_T$, $ackBound$, $writeDep$, $lsnConst$)}
+  \SetKwFor{Match}{match}{with:}{end}
+  \tcp{ReadOnlyTransact on manager node $i\in[1,n]$}
+  \uIf{$ writeDep \geq\min(W_i^{\text{key}}|cid).num$}{
+    \textbf{wait} until $writeDep \in W_i^{\text{key}}$
+  }
+  $fence := -1$\\
+  $\text{ShardSet} := \emptyset$\\
+  \tcp{Participating shards and preliminary fence computation}
+  \ForEach{$j \in [1,m]$}{
+    $\text{particip} := T^{\text{read}} \cap sh(j)$\\
+    \uIf{\upshape $\text{particip} \neq \emptyset$}{
+      $\text{ShardSet} := \text{ShardSet} \cup \{ j\}$\\
+      $fence := \max\{fence, exec(Q_i|j)\}$                
+    }
+  }
+  \tcp{Modify constraints based on retry flag and $R_i$}
+  \uIf{$isRetry$}{
+    $fence := lsnConst$
+  }
+  \uIf{\upshape $crsn_T.cid \in R_i^{\text{key}}$}{
+    \uIf{$crsn_T.num \leq R_i[crsn_T.cid].num$}{
+      \uIf{$\neg isRetry$}{
+        $fence := R_i[crsn_T.cid].lsn$
+      }
+    } \Else{
+      \uIf{$\neg isRetry$}{
+        $fence := \max\{fence, R_i[crsn_T.cid].lsn\}$
+      }
+      $R_i[crsn_T.cid] := fence$
+    }    
+  } \Else{
+    $R_i := R_i \cup \{ crsn_T.cid \mapsto fence \}$
+  }
+  \tcp{Sends reads and constraints to shards}
+  $numShards := |\text{ShardSet}|$\\
+  \ForEach{$j \in \text{ShardSet}$}{
+    $\text{Send}_{j}(\text{ShardExecRead}, \{T|j, crsn_T, fence, numShards\})$
+  }
+  \textbf{return}
+\end{procedure}
 
-For retries, the client session must also explicitly provide an upper bound on freshness to the transaction manager node. Otherwise, a retry could return information newer than that of later reads, with respect to invocation order. We take the upper bound to be the log sequence number associated . Observe that this scheme can potentially lead to a large amount of .  
 
+\section{Read-Write and Dependent Transactions} \label{deptxn}
 
-
+A client-driven approach would enable the $writeDep$ optimization described in the previous section, but the tradeoff would be an increase in the number of client-manager node round trips. In view of acheiving higher throughput, we opt not to take this approach. 
 % \subsection*{Read-Only Transactions}
 % TODO\\
 % \textbf{Client Sessions}
@@ -286,4 +364,12 @@ For retries, the client session must also explicitly provide an upper bound on f
 
 %   This is updated such that the CWSNs are one-to-one with $\tilde{\mathcal{L}_i}$.
 % \item \underline{Set of unacknowledged write transaction responses}: Concretely, a set of CWSNs whose corresponding transaction responses have not been acknowledged.
+
+  
+%   \Match{$(isRetry, crsn_T.cid \in R_i, crsn_T.num \leq R_i[crsn_T.cid].num)$}{
+%     $(\textbf{false}, \textbf{true}, \textbf{false}) \implies fence := \max\{fence, R_i[crsn_T.cid].lsn\}$ \\
+%     $(\textbf{false}, \textbf{true}, \textbf{true}) \implies fence := R_i[crsn_T.cid].lsn$ \\
+%     $(\textbf{true}, \textbf{true}, \textbf{true}) \implies fence := lsnConst$ \\
+%     $(\textbf{true}, \textbf{true}, \textbf{false}) \implies fence := lsnConst$    
+%   }
 \end{document}
