@@ -4,7 +4,7 @@
 \usepackage[font=bf]{caption}
 \usepackage{float}
 \usepackage{sectsty}
-\usepackage[margin=0.9in]{geometry}
+\usepackage[margin=0.9in, top=0.7in]{geometry}
 \usepackage[linesnumbered,ruled]{algorithm2e}
 \usepackage{amsmath,amssymb}
 \usepackage[colorlinks, linkcolor={red!70!black}]{hyperref}
@@ -14,8 +14,8 @@
 
 \begin{document}
 \section{System Goals}
-\par Many recent transactional database systems, such as Google's Spanner, FaunaDB, and AWS DynamoDB, guarantee Strict Serializability (or stronger) for application programmers. Our system \emph{guarantees Regular Sequential Serializability}, a consistency model that weakens Strict Serializability but maintains the same set of application invariants.
-\par Furthermore, both Strict Serializability and Regular Sequential Serializability assume synchronous client interaction. That is, their guarantees only hold for complete operations -- those with a matching invocation and response pair. This system aims to provide \emph{stronger semantics for multiple outstanding client operations} in the form of a invocation-order guarantee. As the name suggests, all clients can expect system execution to respect the order of their invocations. 
+\par Many recent transactional database systems, such as Google's Spanner, FaunaDB, and AWS DynamoDB, guarantee Strict Serializability (or stronger) for application programmers. Our system \emph{guarantees Regular Sequential Serializability}, a consistency model that weakens Strict Serializability but maintains the same set of application invariants. This allows more flexibility in serving reads, potentially decreasing tail-latency. 
+\par Both Strict Serializability and Regular Sequential Serializability assume synchronous client interaction. That is, their guarantees only hold for complete operations -- those with a matching invocation and response pair. This system aims to provide \emph{stronger semantics for multiple outstanding client operations} in the form of a invocation-order guarantee. As the name suggests, all clients can expect system execution to respect the order of their invocations. 
 \par Performance wise, we strive to achieve \emph{high throughput}, minimizing the overhead imposed by providing the invocation-order guarantee. Following the approach of Calvin, we ``determinize'' the order of transactions through a shared log, eliminating reliance on concurrency control mechanisms in the common case. We also emphasize \emph{data durability}; once returned to the client, a transaction will not be lost unless an improbable number of service components fail. 
 
 \section{Client-Service Interaction}
@@ -45,8 +45,8 @@
 \end{tcolorbox}
 \begin{tcolorbox}[title= On \textbf{shard group} $j$, enhanced,width=1.05\textwidth, left skip=-0.5cm, colback=black!4!white]
 \begin{enumerate}[itemsep=1pt]
-\item \underline{Log sequence number of the most recently completed sub-transaction, $shExec(j)$}: This is analogous to the queues and $exec(\cdot)$ in the transaction manager nodes. 
-\item \underline{Local sequence number, $ssn_j$}: After the completion of any sub-transaction $T|j$, the shard group increments $ssn_j$. 
+\item \underline{Log sequence number of the most recently completed sub-transaction, $shExec_j$}: This is analogous to the queues and $exec(\cdot)$ in the transaction manager nodes. 
+\item \underline{Local sequence number, $ssn_j$}: After the completion of any sub-transaction $T|j$ that involves a state mutation, the shard group increments $ssn_j$. 
 \end{enumerate}
 \end{tcolorbox}
 \begin{tcolorbox}[title= On \textbf{client} $cid$, enhanced,width=1.05\textwidth, left skip=-0.5cm, colback=black!4!white]
@@ -74,7 +74,7 @@
     $cwsn_{\max} := cwsn_{\max} + 1$ \\
     $cwsn_T := cwsn_{\max}$\\
   }
-  $ackBound := \min(InProg_{cid})$ \\ % Could optimize this to clean specific intervals
+  $ackBound := \min(InProg_{cid})$  \tcp{could optimize this to clean specific intervals}
   $\text{Send}_{\text{head}}(\text{AppendTransact}, \{T, cwsn_T, ackBound\})$ \tcp{all writes go to head of chain} 
   \textbf{return} $cwsn_T$
 \end{procedure}
@@ -124,9 +124,10 @@ Note the variables $cwsn_T$ and $ackBound$. The first of these two guarantees ex
     \textbf{wait} until $ssn_j + 1 = sn$
   }
   \ForEach{$op \in T|j$}{
-    \tcp{abstract put exposed by storage service, these calls will be batched in practice}
-    put($op.key$, $op.value$)
-  }  
+    \tcp{versioned put exposed by storage service, these will be batched in practice}
+    $\text{put}(op.key, op.value, ind)$
+  }
+  $shExec_j := ind$ \\
   $ssn_j := sn$ \\
   $\text{Send}_{\text{tail}}(\text{ExecNotif}, \{j, ind\})$\\
   \textbf{return}
@@ -143,8 +144,8 @@ Note the variables $cwsn_T$ and $ackBound$. The first of these two guarantees ex
     $\text{Send}_\text{tail}(TransactExec, \{ind\})$
   }
   \textbf{return}
-\end{procedure}\hfill 
-\noindent\par The tail listens to shard group replies through $\text{ExecNotif}$ and updates its $C_{n}$. After all sub-transactions are finished, transaction completion is propagated backwards to the head through $\text{ExecAppendTransact}$. For each participating shard queue, elements are deqeued up to and including the completed transaction index. This ensures an updated view of all execution statuses, which is critical for correctly serving reads. When the head is done updating its queues, the response is returned to the client session.\\
+\end{procedure}
+\par The tail listens to shard group replies through $\text{ExecNotif}$ and updates its $C_{n}$. After all sub-transactions are finished, transaction completion is propagated backwards to the head through $\text{ExecAppendTransact}$. For each participating shard queue, elements are deqeued up to and including the completed transaction index. This ensures an updated view of all execution statuses, which is critical for correctly serving reads. When the head is done updating its queues, the response is returned to the client session.\\
 \begin{procedure}[H]
   \caption{ExecAppendTransact($ind$)}
   \tcp{TransactExec on node $i \in [1, n]$}
@@ -170,8 +171,7 @@ Note the variables $cwsn_T$ and $ackBound$. The first of these two guarantees ex
   \tcp{SessionRespWrite on client $cid$}
   $InProg_{cid} := InProg_{cid}\setminus \{cwsn\}$\\
   \textbf{return} $resp$
-\end{procedure}
-\newpage
+\end{procedure} \newpage
 \section{Read-Only Transactions} \label{rotxn}
 % \par In contrast with write-only transactions, there is no data structure tracking read-only transactions on the transaction manager nodes. Moreover, client sessions . As such, the client-side library plays a non-trivial role in ensuring correctness.
  $\text{SessionRuntimeRead}$ in the client-side library is called on every read-only transaction, including retries. Responses include the log sequence number used in executing the read. \\
@@ -198,13 +198,13 @@ Note the variables $cwsn_T$ and $ackBound$. The first of these two guarantees ex
     }
     $ReadResult_{cid}[crsn_T] := (-1, \{ \}, lsnConst)$ \tcp{throw away partially completed read}
   }
-  $ackBound := \min(InProg_{cid})$ \tcp{also piggyback write acknowledgements on reads}
-  $\text{Send}_{i}(\text{ReadOnlyTransact}, \{T, isRetry, crsn_T, ackBound, writeDep, lsnConst\})$ \\
+  %$ackBound := \min(InProg_{cid})$ \tcp{also piggyback write acknowledgements on reads}
+  $\text{Send}_{i}(\text{ReadOnlyTransact}, \{T, isRetry, crsn_T, writeDep, lsnConst\})$ \\
   \textbf{return} $crsn_T$
 \end{procedure}
-The utility of $crsn_T$ and $ackBound$ are the same as in write-only transactions. For every read-only transaction, $writeDep$ captures dependency on the most recent ongoing write. This is not required in all cases. If the write key-set of all ongoing transactions are known, a dependency need only be declared on the latest transaction $X$ such that $X^{\text{write}} \cap T^{\text{read}} \neq \emptyset$. Unfortunately, this optimization is not always possible due to the way we handle read-write and dependent transactions (\S\ref{deptxn}). \\
+The utility of $crsn_T$ is the same as in write-only transactions. For every read-only transaction, $writeDep$ captures dependency on the most recent ongoing write. This is not required in all cases. If the write key-set of all ongoing transactions are known, a dependency need only be declared on the latest transaction $X$ such that $X^{\text{write}} \cap T^{\text{read}} \neq \emptyset$. Unfortunately, this optimization is not always possible due to the way we handle read-write and dependent transactions (\S\ref{deptxn}). \\
 \begin{procedure}[H]
-  \caption{SessionRespRead($crsn_T$, $fence$, $data$, $numShards$)}
+  \caption{SessionRespRead($data$, $crsn_T$, $fence$, $numShards$)}
   \tcp{SessionRespRead on client $cid$}
   $(\text{currNum}, \text{currData}, \text{currLsn}) := ReadResult_{cid}[crsn_T]$ \\
   \uIf{\upshape $\text{currLsn} = -1 \lor \text{currLsn} = fence$}{
@@ -230,10 +230,10 @@ The utility of $crsn_T$ and $ackBound$ are the same as in write-only transaction
 \end{procedure}
 \par For retries, the client session must also explicitly provide an upper bound on freshness, $lsnConst$, to the transaction manager node. Otherwise, a retry could return information newer than that of later reads, with respect to invocation order. Consider the set of completed read-only transactions with CRSN greater than $crsn_T$. We take $lsnConst$ as the log sequence number contained in the response to the minimal element of this set. That is, $lsnConst$ can be thought of as the \underline{least} upper bound on freshness. In practice, we do not track all completed read-only transactions. The set $UB_{cid}$ only contains least upper bounds, which corresponds to transactions whose immediate predecessors have not yet received a response (lines 4-5 of SessionRespRead). 
 \par Once a read is retried, responses matching the original invocation must be discarded. Again, this is needed to prevent more recent invocations from matching with a response containing data more stale than older invocations. Observe that this scheme can potentially lead to a large amount of unneccesary, cascading retries. For example, responses for a large set of read transactions may arrive just after all retries are sent out, thereby invalidating their content. However, we expect that manifestation of these behaviors is highly unlikely, assuming a resonable timeout value. 
-\par Based on the status of their queues, transaction manager nodes compute a consistent read across shards subject to the client library's $writeDep$ and $lsnConstr$ constraints. This consistent read can be visualized as a ``fence'' that cuts across the manager's queues. \\
+\par Based on the status of their queues, transaction manager nodes compute a consistent read across shards subject to the client library's $writeDep$ and $lsnConstr$ constraints. This consistent read can be visualized as a ``fence'' that cuts across the manager's queues.\\
 % TODO: handle ackBound and send forwards/backwards through chain for cleanup
 \begin{procedure}[H]
-  \caption{ReadOnlyTransact($T$, $isRetry$, $crsn_T$, $ackBound$, $writeDep$, $lsnConst$)}
+  \caption{ReadOnlyTransact($T$, $isRetry$, $crsn_T$, $writeDep$, $lsnConst$)}
   \SetKwFor{Match}{match}{with:}{end}
   \tcp{ReadOnlyTransact on manager node $i\in[1,n]$}
   \uIf{$ writeDep \geq\min(W_i^{\text{key}}|cid).num$}{
@@ -274,11 +274,27 @@ The utility of $crsn_T$ and $ackBound$ are the same as in write-only transaction
   }
   \textbf{return}
 \end{procedure}
+\par A shard group simply waits until the manager-determined constraint is satisfied before executing its portion of the read. Shards return directly to the client, $crsn_T.cid$, which originated the request. Because correctness depends only on execution up to a specified log sequence number, writes on the shard can continue uninterrupted in parallel.\\
+\begin{procedure}[H]
+  \caption{ShardExecRead($T|j, crsn_T, fence, numShards$)}
+  \tcp{ShardExecRead on shard group $j$}
+  \textbf{wait} until $shExec_j \geq fence$\\
+  $data := \emptyset$\\
+  \ForEach{$op \in T|j$}{
+    \tcp{multi-versioned get exposed by storage service, calls batched in practice}
+    $data := data \cup \{op.key \mapsto \text{get}(op.key)\}$
+  }
+  $\text{Send}_{crsn_{T}.cid }(\text{SessionRespRead}, \{data, crsn_T, fence, numShards\})$\\
+  \textbf{return}
+\end{procedure}
 
-
+% Need to talk about garbage collection of these values
 \section{Read-Write and Dependent Transactions} \label{deptxn}
 
-A client-driven approach would enable the $writeDep$ optimization described in the previous section, but the tradeoff would be an increase in the number of client-manager node round trips. In view of acheiving higher throughput, we opt not to take this approach. 
+A client-driven approach would enable the $writeDep$ optimization described in the previous section, but the tradeoff would be an increase in the number of client-manager node round trips. In view of acheiving higher throughput, we opt not to take this approach.
+
+\section{Checkpointing and metadata garbage collection}
+Lower bounds over all clients $lb$ (need to track possible $lsnConst$ values, should make $maxNum$ a range instead). Routine garbage sweeps alternating between forwards $\rightarrow$ backwards and backwards $\rightarrow$ forwards (piggyback on append and exec). Log trimming easy, can do on committed portion of log -- everything before $\min(\min(C_i^{\text{key}}), lb)$.
 % \subsection*{Read-Only Transactions}
 % TODO\\
 % \textbf{Client Sessions}
