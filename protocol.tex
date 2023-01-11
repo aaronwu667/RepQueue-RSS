@@ -15,7 +15,7 @@
 
 \begin{document}
 \section{System Goals}
-\par Many recent transactional database systems, such as Google's Spanner, FaunaDB, and AWS DynamoDB, guarantee Strict Serializability (or stronger) for application programmers. Our system \emph{guarantees Regular Sequential Serializability}, a consistency model that weakens Strict Serializability but maintains the same set of application invariants. This allows more flexibility in serving reads, potentially decreasing tail-latency. 
+\par Many recent transactional database systems, such as Google Spanner, FaunaDB, and AWS Aurora, guarantee Strict Serializability (or stronger) for application programmers. Our system \emph{guarantees Regular Sequential Serializability}, a consistency model that weakens Strict Serializability but maintains the same set of application invariants. This allows more flexibility in serving reads, potentially decreasing tail-latency. 
 \par Both Strict Serializability and Regular Sequential Serializability assume synchronous client interaction. That is, their guarantees only hold for complete operations -- those with a matching invocation and response pair. This system aims to provide \emph{correctness for multiple outstanding client operations} in the form of a invocation-order guarantee. As the name suggests, all clients can expect system execution to respect the order of their invocations. 
 \par Performance wise, we strive to achieve \emph{high throughput}, minimizing the overhead imposed by providing the invocation-order guarantee. Following the approach of Calvin, we ``determinize'' the order of transactions through a shared log, eliminating reliance on concurrency control mechanisms in the common case. We also emphasize \emph{data durability}; once returned to the client, a transaction will not be lost unless an improbable number of service components fail. 
 
@@ -249,7 +249,7 @@ The utility of $crsn_T$ is the same as in write-only transactions. For every rea
     }
   }
 \end{procedure}
-\par For retries, the client session must also explicitly provide an upper bound on freshness, $lsnConst$, to the transaction manager node. Otherwise, a retry could return information newer than that of later reads, with respect to invocation order. Consider the set of completed read-only transactions with CRSN greater than $crsn_T$. We take $lsnConst$ as the log sequence number contained in the response to the minimal element of this set. That is, $lsnConst$ can be thought of as the \underline{least} upper bound on freshness. In practice, we do not track all completed read-only transactions. The set $UB_{cid}$ only contains least upper bounds, which corresponds to transactions whose immediate predecessors have not yet received a response (lines 4-5 of SessionRespRead). 
+\par For retries, the client session must also explicitly provide an upper bound on freshness, $lsnConst$, to the transaction manager node. Otherwise, a retry could return information newer than that of later reads, with respect to invocation order. Consider the set of completed read-only transactions with CRSN greater than $crsn_T$. We take $lsnConst$ as the log sequence number contained in the response to the minimal element of this set. That is, $lsnConst$ can be thought of as the \underline{least} upper bound on freshness. In practice, we do not track all completed read-only transactions. The set $UB_{cid}$ only contains least upper bounds, which corresponds to transactions whose immediate predecessors have not yet received a response (lines 9-12 of SessionRespRead). 
 \par Once a read is retried, responses matching the original invocation must be discarded. Again, this is needed to prevent more recent invocations from matching with a response containing data more stale than older invocations. Observe that this scheme can potentially lead to a large amount of unneccesary, cascading retries. For example, responses for a large set of read transactions may arrive just after all retries are sent out, thereby invalidating their content. However, we expect that manifestation of these behaviors is highly unlikely, assuming a resonable timeout value. 
 \par Based on the status of their queues, transaction manager nodes compute a consistent read across shards subject to the client library's $writeDep$ and $lsnConstr$ constraints. This consistent read can be visualized as a ``fence'' that cuts across the manager's queues.\\
 \begin{procedure}[H]
@@ -343,10 +343,10 @@ In constrast to the simple case, a transactions is \emph{dependent} if the full 
 % Talk about aborts being sent through chain to clear any reads
 
 
-\section{Checkpointing and metadata garbage collection}
-% Need to talk about garbage collection of these values
-Lower bounds over all clients $lb$ (need to track possible $lsnConst$ values, should make $maxNum$ a range instead). Routine garbage sweeps alternating between forwards $\rightarrow$ backwards and backwards $\rightarrow$ forwards (piggyback on append and exec). Log trimming on committed portion of log -- everything before $\min(\min(C_i^{\text{key}}), lb)$.
-\section{Failure Recovery}
+% \section{Checkpointing and metadata garbage collection}
+% % Need to talk about garbage collection of these values
+% Lower bounds over all clients $lb$ (need to track possible $lsnConst$ values, should make $maxNum$ a range instead). Routine garbage sweeps alternating between head $\rightarrow$ tail and tail $\rightarrow$ head (piggyback on append and exec). Log trimming on committed portion of log -- everything before $\min(\min(C_i^{\text{key}}), lb)$.
+% \section{Failure Recovery}
 % TODO: Need to talk about failure recovery for outstanding reads and outstanding writes. Aborts replicated for performance on head failover.
 % In failure case, abort needs to send down the chain by new head
 
