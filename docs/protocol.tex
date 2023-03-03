@@ -1,6 +1,6 @@
 \documentclass{article}
 \pagestyle{empty}
-\usepackage{enumitem}
+\usepackage[shortlabels]{enumitem}
 \usepackage[font=bf]{caption}
 \usepackage{float}
 \usepackage{sectsty}
@@ -162,7 +162,7 @@ Note the variables $cwsn_T$ and $ackBound$. The first of these two guarantees ex
   }    
   \uIf{$C_n[ind].shds = \emptyset$}{
     \tcp{Local call to start communication backwards through the chain}
-    $\text{ExecAppendTransact}(\{ind, W_n[\text{cwsn}].data)$ 
+    $\text{ExecAppendTransact}(\{ind, W_n[\text{cwsn}].data\})$ 
   }
   \textbf{return}
 \end{procedure}
@@ -337,9 +337,24 @@ In constrast to the simple case, a transactions is \emph{dependent} if the full 
   $\text{AppendTransact}(T_{\text{reduce}}, cwsn_T, ackBound)$
 \end{procedure}
 
+\section{Proof of Safety}
+We now turn to proving that the protocol described above guarantees MD-RSS. First, we recall some definitions. \textit{TODO}
+\\\\
+\textbf{Theorem (Safety):} Any well-formed execution, $\pmb{\sigma}$, of the protocol satisfies MD-RSS. 
+\\\\
+To prove this theorem, we will first define a total ordering on $\pmb{\sigma}$, using log indices as logical timestamps. We will then show that the resulting sequential execution $\pmb{\sigma}_{\text{ord}}$ is equivalent to $\pmb{\sigma}$, and $\pmb{\sigma}_{\text{ord}}$ is in our desired sequential specification. Finally, we will verify that $\pmb{\sigma}_{\text{ord}}$ satisfies both the RSS and Multi-Dispatch properties. \\\\
+\textit{Proof of Theorem:} Let $W$ be the set of simple read-write invocation and response pairs in $\sigma$, and let $R$ be the set of read-only invocation and response pairs. 
+Observe that pair in $W$ corresponds to a unique index in the transaction manager log $\mathcal{L}$. Similarly each pair in $R$ has an associated $lsnConst$, which is also an index into the transaction manager log $\mathcal{L}$. Note, however, that for read-only pairs this index may not be unique. In either case, for pair $a\in \sigma$, denote the associated index $\text{ind}(a)$. We can treat these as logical timestamps to define an strict total order over $\pmb{\sigma}$. 
+\par Concretely, let $\rightarrow$ be the binary relation over $\pmb{\sigma} \times \pmb{\sigma}$, such that for $a, b \in \pmb{\sigma}$ one has $a \sqsubset b$ if and only if one of the following hold
+\begin{enumerate}[i.)]
+\item $\text{ind}(a) < \text{ind}(b)$
+\item $\text{ind}(a) = \text{ind}(b)$ where $a \in W$, $b \in R$
+\item $\text{ind}(a) = \text{ind}(b)$ where $a, b \in R$, both are from the same client, and $\text{CRSN}(a)< \text{CRSN}(b)$.
+\item $\text{ind}(a) = \text{ind}(b)$ where $a, b \in R$, the pairs are from the different clients, and the $cid$ of the client who issued $a$ is strictly less than that of $b$ i.e. we arbitrarily break ties. 
+\end{enumerate}
+Claim that this is a well-defined strict total order. \textit{TODO}
 
-
-
+\section{Extensions: Checkpointing and Metadata Garbage Collection}
 % Talk about aborts being sent through chain to clear any reads
 
 

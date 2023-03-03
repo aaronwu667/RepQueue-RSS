@@ -1,0 +1,63 @@
+syntax = "proto3";
+package raft_net;
+
+service RaftService {
+  rpc AppendEntries(AppendEntriesRequestProto) returns (AppendEntriesResponseProto);
+  rpc InstallSnapshot(InstallSnapshotRequestProto) returns (InstallSnapshotResponseProto);
+  rpc RequestVote(VoteRequestProto) returns (VoteResponseProto);
+}
+
+message LogIdProto {
+  uint64 term = 1;  
+  uint64 index = 2;
+}
+
+message EntryProto {
+  LogIdProto log_id = 1;
+  string payload = 2; // serialize to remain agnostic to application
+}
+
+message AppendEntriesRequestProto {
+  uint64 term = 1;
+  uint64 leader_id = 2;
+  optional LogIdProto prev_log_id = 3;
+  repeated EntryProto entries = 4;  
+  optional LogIdProto leader_commit = 5;
+}
+
+message AppendEntriesResponseProto {
+  uint64 term = 1;
+  bool success = 2;
+  bool conflict = 3;
+}
+
+message SnapshotMetaProto {
+  optional LogIdProto last_log_id = 1;
+  string snapshot_id = 2;
+}
+
+message InstallSnapshotRequestProto {
+  uint64 term = 1;
+  uint64 leader_id = 2;
+  SnapshotMetaProto meta = 3;
+  uint64 offset = 4;
+  bytes data = 5;
+  bool done = 6;
+}
+
+message InstallSnapshotResponseProto {
+  uint64 term = 1;
+  optional LogIdProto last_applied = 2;
+}
+
+message VoteRequestProto {
+  uint64 term = 1;
+  uint64 candidate_id = 2;
+  optional LogIdProto last_log_id = 3;
+}
+
+message VoteResponseProto {
+  uint64 term = 1;
+  bool vote_granted = 2;
+  optional LogIdProto last_log_id = 3;
+}

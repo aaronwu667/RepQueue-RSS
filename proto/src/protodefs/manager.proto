@@ -1,0 +1,14 @@
+syntax = "proto3";
+import "common.proto";
+package manager_net;
+
+service ManagerService {
+  rpc ExecNotif(ExecNotifRequest) returns (common_decls.Empty);
+}
+
+message ExecNotifRequest {
+  optional common_decls.TxnRes res = 1;
+  uint64 nodeId = 2;
+  uint64 ind = 3;
+  bool wrongLeader = 4; /// optimization, include most recent leader
+}

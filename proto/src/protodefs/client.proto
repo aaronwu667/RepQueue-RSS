@@ -1,0 +1,14 @@
+syntax = "proto3";
+import "common.proto";
+package client_lib;
+
+service ClientLibrary {
+  rpc SessionRespRead(SessionRespReadRequest) returns (common_decls.Empty);
+}
+
+message SessionRespReadRequest {
+  map<string, common_decls.ValueField> res = 1;
+  common_decls.Csn csn = 2;
+  uint64 fence = 3;
+  uint64 numShards = 4;
+}

@@ -1,0 +1,37 @@
+syntax = "proto3";
+package common_decls;
+
+message Csn {
+  uint64 cid = 1;
+  uint64 sn = 2;
+}
+
+message TransactionOp {
+  repeated uint64 serveRemoteGroups = 1;
+  oneof Op {
+    string read = 2;
+    string write = 3;
+    Condition condWrite = 4;
+  }  
+}
+
+/// placeholder, need to complete this later
+/// ideas: AST, deps labeled by node number, "lazy" eval
+///  restrict to all conjunctions or all disjunctions
+message Condition {
+  string val = 1;
+  string expr = 2;
+}
+
+message Empty {
+  
+}
+
+message ValueField {
+  optional string value = 1;
+}
+
+message TxnRes {
+  map<string, ValueField> map = 1;
+}
+
