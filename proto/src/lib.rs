@@ -25,6 +25,10 @@ pub mod manager_net {
     tonic::include_proto!("manager_net");
 }
 
+pub mod cluster_management_net {
+    tonic::include_proto!("cluster_management_net");
+}
+
 impl ValueField {
     pub fn new(o: Option<String>) -> Self {
         ValueField { value: o }

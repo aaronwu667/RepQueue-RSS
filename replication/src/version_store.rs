@@ -6,14 +6,13 @@ use openraft::{
     StorageError, StorageIOError,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use std::{
     collections::{hash_map, BTreeMap, HashMap},
     fmt::Debug,
     io::Cursor,
     ops::RangeBounds,
 };
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::{watch, Mutex, RwLock};
 
 use crate::Op::*;
 use crate::{StoreRequest, StoreResponse};
@@ -70,15 +69,15 @@ pub struct VersionStoreLog {
 // In-memory storage engine
 pub struct MemStore {
     pub state: RwLock<VersionStoreState>,
-    write_notif: Arc<Notify>,
-    read_notif: Arc<Notify>,
+    write_notif: watch::Sender<u64>,
+    read_notif: watch::Sender<u64>,
     logger: RwLock<VersionStoreLog>,
     hard_state: Mutex<Option<HardState>>,
     current_snapshot: RwLock<Option<MemStoreSnapshot>>,
 }
 
 impl MemStore {
-    pub fn new(rn: &Arc<Notify>, wn: &Arc<Notify>) -> Self {
+    pub fn new(wn: watch::Sender<u64>, rn: watch::Sender<u64>) -> Self {
         let state = VersionStoreState {
             data: HashMap::new(),
             last_applied: None,
@@ -92,8 +91,8 @@ impl MemStore {
         };
         MemStore {
             state: RwLock::new(state),
-            write_notif: wn.clone(),
-	    read_notif: rn.clone(),
+            write_notif: wn,
+            read_notif: rn,
             logger: RwLock::new(logger),
             current_snapshot: RwLock::new(None),
             hard_state: Mutex::new(None),
@@ -102,14 +101,14 @@ impl MemStore {
 }
 
 #[async_trait]
-impl RaftStorageDebug<VersionStoreState> for Arc<MemStore> {
+impl RaftStorageDebug<VersionStoreState> for MemStore {
     async fn get_state_machine(&self) -> VersionStoreState {
         self.state.write().await.clone()
     }
 }
 
 #[async_trait]
-impl RaftStorage<StoreRequest, StoreResponse> for Arc<MemStore> {
+impl RaftStorage<StoreRequest, StoreResponse> for MemStore {
     type SnapshotData = Cursor<Vec<u8>>;
 
     // --- Vote and term
@@ -246,9 +245,14 @@ impl RaftStorage<StoreRequest, StoreResponse> for Arc<MemStore> {
                         // update sequence numbers and notify
                         // Optimization: batch these notifications
                         state.ssn += 1;
+                        if let Err(_) = self.write_notif.send(state.ssn) {
+                            panic!("SSN update receivers dropped");
+                        }
+
                         state.sh_exec = req.ind;
-                        self.read_notif.notify_one();
-			self.write_notif.notify_one();
+                        if let Err(_) = self.read_notif.send(state.sh_exec) {
+                            panic!("sh_exec update receivers dropped");
+                        }
 
                         // push result into vector
                         res.push(StoreResponse { res: ent_res });

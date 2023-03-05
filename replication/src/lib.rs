@@ -1,16 +1,17 @@
 use network::BaseNetwork;
 use openraft::{AppData, AppDataResponse, Raft};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 use version_store::MemStore;
-mod channel_pool;
-mod network;
-mod version_store;
-mod raft_service;
-mod shard_service;
+pub mod channel_pool;
+pub mod cluster_management_service;
+pub mod network;
+pub mod raft_service;
+pub mod shard_service;
 mod utils;
+pub mod version_store;
 
-pub type RaftRepl = Raft<StoreRequest, StoreResponse, BaseNetwork, Arc<MemStore>>;
+pub type RaftRepl = Raft<StoreRequest, StoreResponse, BaseNetwork, MemStore>;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum Op {
@@ -39,18 +40,17 @@ mod tests {
     use crate::version_store::MemStore;
     use crate::StoreRequest;
     use crate::StoreResponse;
-    use crate::Arc;
     use async_trait::async_trait;
     use openraft::testing::StoreBuilder;
-    use tokio::sync::Notify;
+    use tokio::sync::watch;
     struct MemStoreBuilder {}
 
     #[async_trait]
-    impl StoreBuilder<StoreRequest, StoreResponse, Arc<MemStore>> for MemStoreBuilder {
-        async fn build(&self) -> Arc<MemStore> {
-	    let wn = Arc::new(Notify::new());
-	    let rn = Arc::new(Notify::new());
-            Arc::new(MemStore::new(&rn, &wn))
+    impl StoreBuilder<StoreRequest, StoreResponse, MemStore> for MemStoreBuilder {
+        async fn build(&self) -> MemStore {
+            let (wn, _) = watch::channel(0);
+            let (rn, _) = watch::channel(0);
+            MemStore::new(rn, wn)
         }
     }
 

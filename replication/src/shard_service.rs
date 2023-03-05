@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::channel_pool::ChannelPool;
 use crate::utils::add_remote_deps;
-use crate::version_store::{MemStore, VersionStoreState};
+use crate::version_store::MemStore;
 use crate::{RaftRepl, StoreRequest};
 use async_trait::async_trait;
 use openraft::error::ClientWriteError;
@@ -18,7 +18,7 @@ use proto::shard_net::{
     shard_service_server::ShardService, ExecAppendReply, ExecAppendRequest, ExecReadRequest,
     PutReadRequest,
 };
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{mpsc, oneshot, watch};
 use tonic::{Request, Response, Status};
 
 #[allow(dead_code)]
@@ -35,14 +35,11 @@ struct DepResolveEntry {
 }
 
 // Raft-based shard group service
-#[allow(dead_code)]
-struct ShardServer {
+pub struct ShardServer {
     // TODO (med priority): separate connection pool for transaction manager nodes
     // Since no failures for experiments, acceptable not to have this for now
-    raft: Arc<RaftRepl>,
     connections: Arc<ChannelPool>,
     store: Arc<MemStore>,
-    node_id: u64,
 
     // Appends
     enqueue_reqs: mpsc::Sender<WriteQueueEntry>,
@@ -56,21 +53,19 @@ struct ShardServer {
 
 impl ShardServer {
     pub fn new(
-        r: &Arc<RaftRepl>,
-        c: &Arc<ChannelPool>,
-        m: &Arc<MemStore>,
+        r: Arc<RaftRepl>,
+        c: Arc<ChannelPool>,
+        m: Arc<MemStore>,
         node_id: u64,
-        wn: &Arc<Notify>,
-        rn: &Arc<Notify>,
+        wn: watch::Receiver<u64>,
+        rn: watch::Receiver<u64>,
     ) -> Self {
         let (enq_tx, enq_rx) = mpsc::channel::<WriteQueueEntry>(1000);
         let (dep_resolv_tx, dep_resolv_rx) = mpsc::channel::<DepResolveEntry>(1000);
         let (handle_dep_tx, handle_dep_rx) = mpsc::channel::<PutReadRequest>(1000);
         let (handle_read_tx, handle_read_rx) = mpsc::channel::<ExecReadRequest>(1000);
         let ret = Self {
-            raft: r.clone(),
             connections: c.clone(),
-            node_id,
             enqueue_reqs: enq_tx,
             dep_resolv_ch: dep_resolv_tx,
             handle_deps: handle_dep_tx,
@@ -78,11 +73,10 @@ impl ShardServer {
             store: m.clone(),
         };
         tokio::spawn(ShardServer::proc_write_queue(
-            r.clone(),
-            c.clone(),
+            r,
+            c,
             enq_rx,
-            wn.clone(),
-            m.clone(),
+            wn,
             node_id,
         ));
         tokio::spawn(ShardServer::dep_resolver(
@@ -90,11 +84,7 @@ impl ShardServer {
             dep_resolv_rx,
             m.clone(),
         ));
-        tokio::spawn(ShardServer::proc_read_queue(
-            handle_read_rx,
-            rn.clone(),
-            m.clone(),
-        ));
+        tokio::spawn(ShardServer::proc_read_queue(handle_read_rx, rn, m));
         return ret;
     }
 
@@ -126,7 +116,8 @@ impl ShardServer {
         });
     }
 
-    async fn serve_read(ent: ExecReadRequest, state: &VersionStoreState) {
+    async fn serve_read(ent: ExecReadRequest, store: Arc<MemStore>) {
+        let state = store.state.read().await;
         let mut res_map = HashMap::<String, ValueField>::new();
         for read_key in ent.txn.into_iter() {
             let read_res = state
@@ -227,17 +218,16 @@ impl ShardServer {
         raft: Arc<RaftRepl>,
         connections: Arc<ChannelPool>,
         mut req_ch: mpsc::Receiver<WriteQueueEntry>,
-        write_notif: Arc<Notify>,
-        store: Arc<MemStore>,
+        mut ssn_watch: watch::Receiver<u64>,
         node_id: u64,
     ) {
         let mut write_queue: BTreeMap<u64, WriteQueueEntry> = BTreeMap::new(); // ssn |-> (request details, dep channel)
+        let mut curr_ssn: u64 = 0;
 
         loop {
             let mut new_req: Option<WriteQueueEntry> = None;
             tokio::select! {
-                // we're only one being notified, so cancellation is fine
-                _ = write_notif.notified() => {},
+                _ = ssn_watch.changed() => {curr_ssn = *ssn_watch.borrow()},
                 r = req_ch.recv() => {
                     match r {
                         Some(_) => {new_req = r},
@@ -246,9 +236,8 @@ impl ShardServer {
                 }
             };
 
-            let state = store.state.read().await;
             if let Some(ent) = new_req {
-                if ent.req.sn == state.ssn + 1 {
+                if ent.req.sn == curr_ssn + 1 {
                     // launch executor
                     tokio::spawn(ShardServer::executor(
                         ent,
@@ -262,11 +251,10 @@ impl ShardServer {
                 let head = match write_queue.keys().next() {
                     Some(inner) => *inner,
                     None => {
-                        drop(state);
                         panic!("Servicer notified, but nothing on queue");
                     }
                 };
-                if head == state.ssn + 1 {
+                if head == curr_ssn + 1 {
                     // remove from queue and launch executor
                     let ent = write_queue.remove(&head).unwrap();
                     tokio::spawn(ShardServer::executor(
@@ -277,9 +265,6 @@ impl ShardServer {
                     ));
                 }
             }
-
-            // unlock before next loop iter
-            drop(state)
         }
     }
 
@@ -340,7 +325,7 @@ impl ShardServer {
             for (ind, dep_vals) in dep_buf.iter() {
                 if let Some(Some(meta)) = metadata.get(ind) {
                     // WARNING: undefined behavior for more than u32 dependencies
-                    if meta.num_deps == dep_vals.len() as u32 {
+                    if meta.num_deps == u32::try_from(dep_vals.len()).unwrap() {
                         let dep_info = metadata.remove(ind).flatten().unwrap();
                         if let Err(_) = dep_info.ch.send(dep_vals.to_owned()) {
                             eprintln!("Error while sending dependencies")
@@ -370,20 +355,21 @@ impl ShardServer {
     // Task that serves reads, does NOT depend on leader status
     async fn proc_read_queue(
         mut req_ch: mpsc::Receiver<ExecReadRequest>,
-        read_notif: Arc<Notify>,
+        mut sh_exec_watch: watch::Receiver<u64>,
         store: Arc<MemStore>,
     ) -> ! {
         // TODO (low priority): client channel pool
         // fence |-> read request
         let mut read_queue = BTreeMap::<u64, ExecReadRequest>::new();
+        let mut curr_sh_exec: u64 = 0;
 
         loop {
             tokio::select! {
-                _ = read_notif.notified() => {
+                _ = sh_exec_watch.changed() => {
                     let mut keys_exec = Vec::with_capacity(read_queue.len() / 3 as usize);
-                    let state = store.state.read().await;
+                    curr_sh_exec = *sh_exec_watch.borrow();
                     for k in read_queue.keys() {
-                        if *k <= state.sh_exec {
+                        if *k <= curr_sh_exec {
                             keys_exec.push(*k);
                         }
                     }
@@ -391,15 +377,14 @@ impl ShardServer {
                     // execute all eligible reads
                     for k in keys_exec.into_iter() {
                         let ent = read_queue.remove(&k).unwrap();
-                        ShardServer::serve_read(ent, &state).await;
+                        ShardServer::serve_read(ent, store.clone()).await;
                     }
                 },
                 new_req = req_ch.recv() => {
                     match new_req {
                         Some(r) => {
-                            let state = store.state.read().await;
-                            if r.fence <= state.sh_exec {
-                                ShardServer::serve_read(r, &state).await;
+                            if r.fence <= curr_sh_exec {
+                                ShardServer::serve_read(r, store.clone()).await;
                             } else {
                                 read_queue.insert(r.fence, r);
                             }
@@ -411,10 +396,6 @@ impl ShardServer {
         }
     }
 }
-
-// if fail because not leader, respond with error code
-
-// at end of each servicing, can clear queue of all enqueued tasks with num < sn
 
 #[async_trait]
 impl ShardService for ShardServer {
@@ -467,12 +448,12 @@ impl ShardService for ShardServer {
             if let Some(ref local_deps) = req.local_deps {
                 let (send, recv) = oneshot::channel::<HashMap<String, ValueField>>();
                 dep_ch = Some(recv);
-                // WARNING: will silently fail when num of dep keys > sizeof(u32)
+                // WARNING: will fail when num of dep keys > sizeof(u32)
                 if let Err(_) = self
                     .dep_resolv_ch
                     .send(DepResolveEntry {
                         ind: req.ind,
-                        num_deps: local_deps.keys.len() as u32,
+                        num_deps: u32::try_from(local_deps.keys.len()).unwrap(),
                         ch: send,
                     })
                     .await

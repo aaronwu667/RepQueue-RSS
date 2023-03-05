@@ -15,9 +15,9 @@ pub struct BaseNetwork {
 }
 
 impl BaseNetwork {
-    pub fn new(conf: &Arc<ChannelPool>) -> Self {
+    pub fn new(conf: Arc<ChannelPool>) -> Self {
         Self {
-            connections: Arc::clone(conf),
+            connections: conf,
         }
     }
 }

@@ -11,14 +11,14 @@ use openraft::raft::{InstallSnapshotRequest, VoteRequest};
 use tonic::{Request, Response, Status};
 
 // Raft based shard group service
-struct RaftServer {
+pub struct RaftServer {
     raft: Arc<RaftRepl>,
 }
 
 impl RaftServer {
-    pub fn new(r: &Arc<RaftRepl>) -> Self {
+    pub fn new(r: Arc<RaftRepl>) -> Self {
         Self {
-            raft: Arc::clone(r),
+            raft: r,
         }
     }
 }

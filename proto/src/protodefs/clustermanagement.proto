@@ -1,0 +1,8 @@
+syntax = "proto3";
+import "common.proto";
+package cluster_management_net;
+
+service ClusterManagementService {
+  rpc ConnectNode(common_decls.Empty) returns (common_decls.Empty);
+  rpc InitCluster(common_decls.Empty) returns (common_decls.Empty);
+}
