@@ -42,4 +42,20 @@ impl ChannelPool {
             None => panic!("No channel associated with node {}", node),
         }
     }
+
+    pub async fn get_multiple_clients<T>(
+        &self,
+        f: fn(Channel) -> T,
+        node_ids: Vec<NodeId>,
+    ) -> Vec<T> {
+        let channels = self.channels.read().await;
+        let mut ret = Vec::with_capacity(node_ids.len());
+        for id in node_ids {
+            match channels.get(&id) {
+                Some(chan) => ret.push(f(chan.clone())),
+                None => panic!("No channel associated with node {}", id)
+            }
+        }
+        return ret;
+    }
 }

@@ -8,23 +8,22 @@ use replication::{
     network::BaseNetwork,
     raft_service::RaftServer,
     shard_service::ShardServer,
-    version_store::MemStore,
+    version_store::MemStore, TAIL_NID,
 };
 use std::{env, sync::Arc};
-use tokio::{
-    runtime::Runtime,
-    sync::{mpsc, watch, Notify},
-};
+use tokio::sync::{mpsc, watch, Notify};
 use tonic::transport::Server;
 
-fn main() {
-    // <Cluster addresses>, my config address, my node id (index into cluster addresses)
-    let mut args: Vec<String> = env::args().collect();
-    assert!(args.len() > 2, "Must specify nodeId and address");
+#[tokio::main]
+async fn main() {
+    // tail addr, <Cluster addrs>, my config address, my node id (index into cluster addresses)
+    let mut args: Vec<String> = env::args().skip(1).collect();
+    assert!(args.len() > 3, "missing command line args");
     let ind = args.pop().unwrap().parse::<usize>().unwrap();
+    assert!(ind != TAIL_NID as usize, "tail id must be 0");
     let my_config_addr = args.pop().unwrap().parse().unwrap();
     let my_cluster_addr = args[ind].to_owned().parse().unwrap();
-    let cluster_node_ids = (0..u64::try_from(args.len() - 1).unwrap()).collect();
+    let cluster_node_ids = (1..u64::try_from(args.len() - 1).unwrap()).collect();
 
     // start cluster configuration server
     let (handle, mut rx) = mpsc::channel(10);
@@ -41,14 +40,14 @@ fn main() {
         }
     });
 
-    let msg = rx.blocking_recv().unwrap();
-    if let InitStatus::Init = msg {
+    let mut conn_pool = ChannelPool::new();
+    let msg = rx.recv().await.unwrap();
+    if let InitStatus::Connect = msg {
+        // set up connections
+        conn_pool.init(args);
+    } else {
         panic!("Node not yet connected")
     }
-
-    // set up connections
-    let mut conn_pool = ChannelPool::new();
-    conn_pool.init(args);
 
     //init data structures
     let node_id = u64::try_from(ind).unwrap();
@@ -63,7 +62,7 @@ fn main() {
     let raft = Arc::new(Raft::new(node_id, config, Arc::new(network), store.clone()));
 
     loop {
-        if let InitStatus::Init = rx.blocking_recv().unwrap() {
+        if let InitStatus::Init = rx.recv().await.unwrap() {
             let notif = Arc::new(Notify::new());
             let notif1 = notif.clone();
             tokio::spawn({
@@ -91,14 +90,13 @@ fn main() {
             });
 
             // init cluster
-            Runtime::new().unwrap().block_on(notif.notified());
-            if let Err(e) = Runtime::new()
-                .unwrap()
-                .block_on(raft.initialize(cluster_node_ids))
-            {
+            notif.notified().await;
+            if let Err(e) = raft.initialize(cluster_node_ids).await {
                 panic!("Initialization error {}", e)
             };
             return;
         }
     }
 }
+
+// TODO: Tests

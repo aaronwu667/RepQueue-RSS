@@ -2,5 +2,6 @@
 
 members = [
 "replication",
-"proto"
+"proto",
+"txn-management"
 ]

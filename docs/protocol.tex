@@ -91,7 +91,7 @@ Note the variables $cwsn_T$ and $ackBound$. The first of these two guarantees ex
     }
     \textbf{return}    
   } \Else {
-    \textbf{wait} until $\max(W_i^{\text{key}}|cid).num + 1 = cwsn_T.num$     \tcp{prevent reordering} 
+    \textbf{wait} until $\max(W_i^{\text{key}}|cid).num + 1 = cwsn_T.num \wedge ind = \mathcal{L}_i.len $     \tcp{prevent reordering} 
   } 
   $\text{ind}:=\mathcal{L}_i.len$ \\
   $\mathcal{L}_i \leftarrow T$ \\

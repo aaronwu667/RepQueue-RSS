@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::channel_pool::ChannelPool;
 use crate::utils::add_remote_deps;
 use crate::version_store::MemStore;
-use crate::{RaftRepl, StoreRequest};
+use crate::{RaftRepl, StoreRequest, TAIL_NID};
 use async_trait::async_trait;
 use openraft::error::ClientWriteError;
 use proto::client_lib::client_library_client::ClientLibraryClient;
@@ -21,13 +21,11 @@ use proto::shard_net::{
 use tokio::sync::{mpsc, oneshot, watch};
 use tonic::{Request, Response, Status};
 
-#[allow(dead_code)]
 struct WriteQueueEntry {
     req: ExecAppendRequest,
     ch: Option<oneshot::Receiver<HashMap<String, ValueField>>>,
 }
 
-#[allow(dead_code)]
 struct DepResolveEntry {
     ind: u64,                                         // Transaction manager index
     num_deps: u32,                                    // number of dependencies expected
@@ -72,19 +70,13 @@ impl ShardServer {
             enqueue_reads: handle_read_tx,
             store: m.clone(),
         };
-        tokio::spawn(ShardServer::proc_write_queue(
-            r,
-            c,
-            enq_rx,
-            wn,
-            node_id,
-        ));
-        tokio::spawn(ShardServer::dep_resolver(
+        tokio::spawn(Self::proc_write_queue(r, c, enq_rx, wn, node_id));
+        tokio::spawn(Self::dep_resolver(
             handle_dep_rx,
             dep_resolv_rx,
             m.clone(),
         ));
-        tokio::spawn(ShardServer::proc_read_queue(handle_read_rx, rn, m));
+        tokio::spawn(Self::proc_read_queue(handle_read_rx, rn, m));
         return ret;
     }
 
@@ -102,12 +94,12 @@ impl ShardServer {
         }
     }
 
-    async fn serve_tail(resp: ExecNotifRequest, node_id: u64, connections: Arc<ChannelPool>) {
+    async fn serve_tail(resp: ExecNotifRequest, connections: Arc<ChannelPool>) {
         tokio::spawn({
             let conns = connections.clone();
             async move {
                 let mut client = conns
-                    .get_client(|c| ManagerServiceClient::new(c), node_id)
+                    .get_client(|c| ManagerServiceClient::new(c), TAIL_NID)
                     .await;
                 if let Err(e) = client.exec_notif(resp).await {
                     eprintln!("Error when sending to manager node {}", e);
@@ -180,7 +172,7 @@ impl ShardServer {
 
                     // serve
                     for (remote_id, vals) in remote_deps.into_iter() {
-                        tokio::spawn(ShardServer::serve_remote(
+                        tokio::spawn(Self::serve_remote(
                             remote_id,
                             ent.req.ind,
                             vals,
@@ -196,7 +188,7 @@ impl ShardServer {
                     ind: ent.req.ind,
                     wrong_leader: false,
                 };
-                ShardServer::serve_tail(resp, node_id, connections).await;
+                Self::serve_tail(resp, connections).await;
             }
             Err(err) => match err {
                 ClientWriteError::ForwardToLeader(_) => {
@@ -206,7 +198,7 @@ impl ShardServer {
                         ind: ent.req.ind,
                         wrong_leader: true,
                     };
-                    ShardServer::serve_tail(resp, node_id, connections).await;
+                    Self::serve_tail(resp, connections).await;
                 }
                 _ => eprintln!("Raft group error"),
             },
@@ -239,7 +231,7 @@ impl ShardServer {
             if let Some(ent) = new_req {
                 if ent.req.sn == curr_ssn + 1 {
                     // launch executor
-                    tokio::spawn(ShardServer::executor(
+                    tokio::spawn(Self::executor(
                         ent,
                         raft.clone(),
                         connections.clone(),
@@ -257,7 +249,7 @@ impl ShardServer {
                 if head == curr_ssn + 1 {
                     // remove from queue and launch executor
                     let ent = write_queue.remove(&head).unwrap();
-                    tokio::spawn(ShardServer::executor(
+                    tokio::spawn(Self::executor(
                         ent,
                         raft.clone(),
                         connections.clone(),
@@ -377,14 +369,14 @@ impl ShardServer {
                     // execute all eligible reads
                     for k in keys_exec.into_iter() {
                         let ent = read_queue.remove(&k).unwrap();
-                        ShardServer::serve_read(ent, store.clone()).await;
+                        Self::serve_read(ent, store.clone()).await;
                     }
                 },
                 new_req = req_ch.recv() => {
                     match new_req {
                         Some(r) => {
                             if r.fence <= curr_sh_exec {
-                                ShardServer::serve_read(r, store.clone()).await;
+                                Self::serve_read(r, store.clone()).await;
                             } else {
                                 read_queue.insert(r.fence, r);
                             }
@@ -429,7 +421,7 @@ impl ShardService for ShardServer {
 
             // serve remote reads again
             for (remote_id, vals) in remote_deps.into_iter() {
-                tokio::spawn(ShardServer::serve_remote(
+                tokio::spawn(Self::serve_remote(
                     remote_id,
                     req.ind,
                     vals,

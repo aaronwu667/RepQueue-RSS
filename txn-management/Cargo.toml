@@ -1,0 +1,20 @@
+[package]
+name = "txn-management"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tonic = "*"
+proto = {path = "../proto"}
+replication = {path = "../replication"}
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+async-trait = "*"
+
+[build-dependencies]
+tonic-build = "0.8"
+
+[[bin]]
+name = "txn_manager"
+path = "src/bin/transaction_service.rs"

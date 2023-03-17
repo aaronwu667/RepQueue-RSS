@@ -11,6 +11,7 @@ pub mod shard_service;
 mod utils;
 pub mod version_store;
 
+pub const TAIL_NID : u64 = 0;
 pub type RaftRepl = Raft<StoreRequest, StoreResponse, BaseNetwork, MemStore>;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
