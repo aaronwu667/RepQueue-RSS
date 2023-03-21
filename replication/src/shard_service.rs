@@ -6,6 +6,7 @@ use crate::utils::add_remote_deps;
 use crate::version_store::MemStore;
 use crate::{RaftRepl, StoreRequest, TAIL_NID};
 use async_trait::async_trait;
+use openraft::NodeId;
 use openraft::error::ClientWriteError;
 use proto::client_lib::client_library_client::ClientLibraryClient;
 use proto::client_lib::SessionRespReadRequest;
@@ -33,10 +34,11 @@ struct DepResolveEntry {
 }
 
 // Raft-based shard group service
+// TODO (BUG): Include shardId and change RPC responses according to proto change
 pub struct ShardServer {
     // TODO (med priority): separate connection pool for transaction manager nodes
     // Since no failures for experiments, acceptable not to have this for now
-    connections: Arc<ChannelPool>,
+    connections: Arc<ChannelPool<NodeId>>,
     store: Arc<MemStore>,
 
     // Appends
@@ -52,7 +54,7 @@ pub struct ShardServer {
 impl ShardServer {
     pub fn new(
         r: Arc<RaftRepl>,
-        c: Arc<ChannelPool>,
+        c: Arc<ChannelPool<NodeId>>,
         m: Arc<MemStore>,
         node_id: u64,
         wn: watch::Receiver<u64>,
@@ -71,11 +73,7 @@ impl ShardServer {
             store: m.clone(),
         };
         tokio::spawn(Self::proc_write_queue(r, c, enq_rx, wn, node_id));
-        tokio::spawn(Self::dep_resolver(
-            handle_dep_rx,
-            dep_resolv_rx,
-            m.clone(),
-        ));
+        tokio::spawn(Self::dep_resolver(handle_dep_rx, dep_resolv_rx, m.clone()));
         tokio::spawn(Self::proc_read_queue(handle_read_rx, rn, m));
         return ret;
     }
@@ -84,7 +82,7 @@ impl ShardServer {
         remote_id: u64,
         ind: u64,
         vals: HashMap<String, ValueField>,
-        connections: Arc<ChannelPool>,
+        connections: Arc<ChannelPool<NodeId>>,
     ) {
         let mut client = connections
             .get_client(|c| ShardServiceClient::new(c), remote_id)
@@ -94,7 +92,7 @@ impl ShardServer {
         }
     }
 
-    async fn serve_tail(resp: ExecNotifRequest, connections: Arc<ChannelPool>) {
+    async fn serve_tail(resp: ExecNotifRequest, connections: Arc<ChannelPool<NodeId>>) {
         tokio::spawn({
             let conns = connections.clone();
             async move {
@@ -134,7 +132,7 @@ impl ShardServer {
     async fn executor(
         mut ent: WriteQueueEntry,
         raft: Arc<RaftRepl>,
-        connections: Arc<ChannelPool>,
+        connections: Arc<ChannelPool<NodeId>>,
         node_id: u64,
     ) {
         // resolve local dependencies, if any
@@ -208,7 +206,7 @@ impl ShardServer {
     // Task that services write queue
     async fn proc_write_queue(
         raft: Arc<RaftRepl>,
-        connections: Arc<ChannelPool>,
+        connections: Arc<ChannelPool<NodeId>>,
         mut req_ch: mpsc::Receiver<WriteQueueEntry>,
         mut ssn_watch: watch::Receiver<u64>,
         node_id: u64,
@@ -329,18 +327,10 @@ impl ShardServer {
             // cleanup anything that's already committed
             // TODO (low priority): flush timeout on the select statement
             let state = store.state.read().await;
-            let mut keys_drop = Vec::with_capacity(dep_buf.len() / 3 as usize);
-            for k in dep_buf.keys() {
-                if *k <= state.sh_exec {
-                    keys_drop.push(*k);
-                }
-            }
+            dep_buf.retain(|k, _| *k > state.sh_exec);
 
             // drop lock before next loop iteration
             drop(state);
-            for k in keys_drop {
-                dep_buf.remove(&k);
-            }
         }
     }
 

@@ -22,16 +22,16 @@ pub enum Op {
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct StoreRequest {
-    pub subtxn: HashMap<String, Op>,
-    pub ind: u64,
-    pub ssn: u64,
+    subtxn: HashMap<String, Op>,
+    ind: u64,
+    ssn: u64,
 }
 
 impl AppData for StoreRequest {}
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct StoreResponse {
-    pub res: Option<HashMap<String, Option<String>>>,
+    res: Option<HashMap<String, Option<String>>>,
 }
 
 impl AppDataResponse for StoreResponse {}

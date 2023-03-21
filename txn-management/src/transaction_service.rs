@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map::Entry::*, BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
+    collections::{hash_map::Entry::*, BTreeMap, HashMap, HashSet, VecDeque},
     sync::Arc,
 };
 
@@ -11,28 +11,32 @@ use proto::{
         AppendTransactRequest, ExecAppendTransactRequest, ExecNotifRequest,
         ReadOnlyTransactRequest,
     },
+    shard_net::{shard_service_client::ShardServiceClient, ExecAppendRequest},
 };
 use replication::channel_pool::ChannelPool;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tonic::{transport::Channel, Request, Response, Status};
 
-// need to include cid for head failover
-pub enum TxnStatus {
+use crate::utils::{update_view, update_view_tail};
+
+// need to include client sequence numbers
+enum TxnStatus {
     InProg(TxnRes),
     Done(TxnRes),
 }
 
-pub enum NodeStatus {
+enum NodeStatus {
     Head(Channel),
-    Tail(Channel, ChannelPool),
+    Tail(Channel, Arc<ChannelPool<u32>>),
     Middle(Channel, Channel),
 }
 
-struct ManagerNodeState {
-    ongoing_txs: Mutex<HashMap<u64, HashSet<TxnStatus>>>, // cid |-> statuses
-    txn_queues: RwLock<HashMap<u32, (u64, VecDeque<u64>)>>, // shard group id |-> (lastExec, queue)
-    ind_to_sh: Mutex<HashMap<u64, (u64, HashSet<u32>)>>,  // log ind |-> (cid, shards)
-    ssn_map: Mutex<HashMap<u32, u64>>, // default value for SSN map should be 1 NOT 0
+pub(crate) struct ManagerNodeState {
+    ongoing_txs: Mutex<HashMap<u64, BTreeMap<u64, TxnStatus>>>, // cid |-> statuses // TODO Change
+    pub(crate) txn_queues: RwLock<HashMap<u32, (u64, VecDeque<u64>)>>, // shard group id |-> (lastExec, queue)
+    pub(crate) ind_to_sh: Mutex<HashMap<u64, (u64, HashSet<u32>)>>,    // log ind |-> (cid, shards)
+    pub(crate) ssn_map: Mutex<HashMap<u32, u64>>, // default value for SSN map should be 1 NOT 0
+    shard_leaders: RwLock<HashMap<u32, u64>>, // keep track of the most recent leader node has seen for each cluster
 }
 
 struct TransactionService {
@@ -46,9 +50,8 @@ struct TransactionService {
 
 impl TransactionService {
     fn new(
-        pred: Option<Channel>,
-        succ: Option<Channel>,
-        cluster_conns: ChannelPool,
+        ssn_map: HashMap<u32, u64>,
+        shard_leaders: HashMap<u32, u64>,
         node_state: NodeStatus,
     ) -> Self {
         let (new_req_tx, new_req_rx) = mpsc::channel(5000);
@@ -71,7 +74,8 @@ impl TransactionService {
             ongoing_txs: Mutex::new(HashMap::new()),
             txn_queues: RwLock::new(HashMap::new()),
             ind_to_sh: Mutex::new(HashMap::new()),
-            ssn_map: Mutex::new(HashMap::new()),
+            ssn_map: Mutex::new(ssn_map),
+            shard_leaders: RwLock::new(shard_leaders),
         });
         tokio::spawn(Self::scheduler(new_req_rx, schd_tx, node_state.clone()));
         tokio::spawn(Self::proc_rw(schd_rx, state.clone(), node_state));
@@ -79,6 +83,23 @@ impl TransactionService {
             state,
             new_rq_ch: new_req_tx,
             exec_notif_ch: exec_tx,
+        }
+    }
+
+    // boilerplate for sending RPCs
+    async fn send_append(req: AppendTransactRequest, ch: Channel) {
+        let mut client = ManagerServiceClient::new(ch.clone());
+        if let Err(e) = client.append_transact(Request::new(req)).await {
+            eprintln!("Chain replication failed: {}", e);
+        }
+    }
+
+    async fn send_exec(sid: u32, req: ExecAppendRequest, pool: Arc<ChannelPool<u32>>) {
+        let mut client = pool
+            .get_client(|c| ShardServiceClient::new(c.clone()), sid)
+            .await;
+        if let Err(e) = client.shard_exec_append(Request::new(req)).await {
+            eprintln!("communication with cluster failed: {}", e);
         }
     }
 
@@ -100,36 +121,45 @@ impl TransactionService {
             if let Some(released_req) = released_req {
                 let ind = log.len();
                 log.push_back(released_req.clone());
-                let ongoing_txns = state.ongoing_txs.lock().await;
-                // TODO
-                //ongoing_txns.insert(k, v);
-                //ongoing_txns.retain(f);
+                let Csn { cid, sn: csn_num } = released_req.csn.as_ref().unwrap();
+                let mut ongoing_txns = state.ongoing_txs.lock().await;
+                ongoing_txns
+                    .entry(*cid)
+                    .and_modify(|m| {
+                        m.insert(
+                            *csn_num,
+                            TxnStatus::InProg(TxnRes {
+                                map: HashMap::new(),
+                            }),
+                        );
+                        m.retain(|k, _| *k >= released_req.ack_bound)
+                    })
+                    .or_insert(BTreeMap::from([(
+                        *csn_num,
+                        TxnStatus::InProg(TxnRes {
+                            map: HashMap::new(),
+                        }),
+                    )]));
                 drop(ongoing_txns);
-
-                let ind_to_sh = state.ind_to_sh.lock().await;
-                let ssn_map = state.ssn_map.lock().await;
-                // TODO
-                drop(ssn_map);
-                drop(ind_to_sh);
 
                 match &*node_state {
                     NodeStatus::Head(succ) => {
-                        let mut client = ManagerServiceClient::new(succ.clone());
+                        update_view(&state, ind, *cid, &released_req.txn).await;
                         let new_req = AppendTransactRequest {
                             ind: u64::try_from(ind).unwrap(),
                             ..released_req
                         };
-                        if let Err(e) = client.append_transact(Request::new(new_req)).await {
-                            eprintln!("Chain replication failed: {}", e);
-                        }
+                        tokio::spawn(Self::send_append(new_req, succ.clone()));
                     }
                     NodeStatus::Middle(_, succ) => {
-                        let mut client = ManagerServiceClient::new(succ.clone());
-                        if let Err(e) = client.append_transact(Request::new(released_req)).await {
-                            eprintln!("Chain replication failed: {}", e);
-                        }
+                        update_view(&state, ind, *cid, &released_req.txn).await;
+                        tokio::spawn(Self::send_append(released_req, succ.clone()));
                     }
-                    NodeStatus::Tail(_, cluster) => {// TODO
+                    NodeStatus::Tail(_, cluster) => {
+                        let mut reqs = update_view_tail(&state, ind, *cid, released_req.txn).await;
+                        for (k, v) in reqs.into_iter() {
+                            tokio::spawn(Self::send_exec(k, v, cluster.clone()));
+                        }
                     }
                 }
             } else {

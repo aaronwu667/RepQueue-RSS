@@ -15,6 +15,7 @@ message ExecAppendRequest {
   optional LocalDeps localDeps = 4; /// each key guaranteed to be unique
 }
 
+/// TODO (BUG): unify with ExecNotifRequest
 message ExecAppendReply {
   optional common_decls.TxnRes res = 1;
   optional uint64 shardId = 2;

@@ -11,11 +11,11 @@ use openraft::{
 use proto::raft_net::raft_service_client::RaftServiceClient;
 
 pub struct BaseNetwork {
-    connections: Arc<ChannelPool>,
+    connections: Arc<ChannelPool<NodeId>>,
 }
 
 impl BaseNetwork {
-    pub fn new(conf: Arc<ChannelPool>) -> Self {
+    pub fn new(conf: Arc<ChannelPool<NodeId>>) -> Self {
         Self {
             connections: conf,
         }
