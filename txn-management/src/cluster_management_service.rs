@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use proto::{
-    cluster_management_net::cluster_management_service_server::ClusterManagementService,
+    cluster_management_net::{cluster_management_service_server::ClusterManagementService, NodeId},
     common_decls::Empty,
 };
 use tokio::sync::mpsc::Sender;
@@ -8,7 +8,8 @@ use tonic::{Request, Response, Status};
 
 pub enum InitStatus {
     Connect,
-    Init,
+    InitMember,    
+    InitLeader
 }
 
 pub struct ClusterManager {
@@ -30,8 +31,22 @@ impl ClusterManagementService for ClusterManager {
         return Ok(Response::new(Empty {}));
     }
 
-    async fn init_cluster(&self, _: Request<Empty>) -> Result<Response<Empty>, Status> {
-        if let Err(_) = self.handle.send(InitStatus::Init).await {
+    async fn init_member(&self, _: Request<Empty>) -> Result<Response<Empty>, Status> {
+        if let Err(_) = self.handle.send(InitStatus::InitMember).await {
+            panic!("sending on cluster management handle failed, cluster may already be running");
+        }
+        return Ok(Response::new(Empty {}));
+    }
+
+    async fn add_member(&self, _: Request<NodeId>) -> Result<Response<Empty>, Status> {
+        if let Err(_) = self.handle.send(InitStatus::InitMember).await {
+            panic!("sending on cluster management handle failed, cluster may already be running");
+        }
+        return Ok(Response::new(Empty {}));
+    }
+
+    async fn init_leader(&self, _: Request<Empty>) -> Result<Response<Empty>, Status> {
+        if let Err(_) = self.handle.send(InitStatus::InitLeader).await {
             panic!("sending on cluster management handle failed, cluster may already be running");
         }
         return Ok(Response::new(Empty {}));

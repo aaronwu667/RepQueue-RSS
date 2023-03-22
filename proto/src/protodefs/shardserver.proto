@@ -3,7 +3,7 @@ import "common.proto";
 package shard_net;
 
 service ShardService {
-  rpc ShardExecAppend(ExecAppendRequest) returns (ExecAppendReply);
+  rpc ShardExecAppend(ExecAppendRequest) returns (common_decls.ExecNotifRequest);
   rpc ShardExecRead(ExecReadRequest) returns (common_decls.Empty);
   rpc PutRead(PutReadRequest) returns (common_decls.Empty);
 }
@@ -13,13 +13,6 @@ message ExecAppendRequest {
   uint64 ind = 2;
   uint64 sn = 3;
   optional LocalDeps localDeps = 4; /// each key guaranteed to be unique
-}
-
-/// TODO (BUG): unify with ExecNotifRequest
-message ExecAppendReply {
-  optional common_decls.TxnRes res = 1;
-  optional uint64 shardId = 2;
-  optional uint64 ind = 3;  
 }
 
 message ExecReadRequest {

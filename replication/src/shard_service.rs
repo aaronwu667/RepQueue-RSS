@@ -6,18 +6,18 @@ use crate::utils::add_remote_deps;
 use crate::version_store::MemStore;
 use crate::{RaftRepl, StoreRequest, TAIL_NID};
 use async_trait::async_trait;
-use openraft::NodeId;
 use openraft::error::ClientWriteError;
+use openraft::NodeId;
 use proto::client_lib::client_library_client::ClientLibraryClient;
 use proto::client_lib::SessionRespReadRequest;
+use proto::common_decls::exec_notif_request::ReqStatus;
 use proto::common_decls::{transaction_op::Op::*, Empty};
+use proto::common_decls::{ExecNotifInner, ExecNotifRequest};
 use proto::common_decls::{TxnRes, ValueField};
 use proto::manager_net::manager_service_client::ManagerServiceClient;
-use proto::manager_net::ExecNotifRequest;
 use proto::shard_net::shard_service_client::ShardServiceClient;
 use proto::shard_net::{
-    shard_service_server::ShardService, ExecAppendReply, ExecAppendRequest, ExecReadRequest,
-    PutReadRequest,
+    shard_service_server::ShardService, ExecAppendRequest, ExecReadRequest, PutReadRequest,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 use tonic::{Request, Response, Status};
@@ -40,6 +40,7 @@ pub struct ShardServer {
     // Since no failures for experiments, acceptable not to have this for now
     connections: Arc<ChannelPool<NodeId>>,
     store: Arc<MemStore>,
+    shard_id: u32,
 
     // Appends
     enqueue_reqs: mpsc::Sender<WriteQueueEntry>,
@@ -56,7 +57,7 @@ impl ShardServer {
         r: Arc<RaftRepl>,
         c: Arc<ChannelPool<NodeId>>,
         m: Arc<MemStore>,
-        node_id: u64,
+        shard_id: u32,
         wn: watch::Receiver<u64>,
         rn: watch::Receiver<u64>,
     ) -> Self {
@@ -71,8 +72,9 @@ impl ShardServer {
             handle_deps: handle_dep_tx,
             enqueue_reads: handle_read_tx,
             store: m.clone(),
+            shard_id,
         };
-        tokio::spawn(Self::proc_write_queue(r, c, enq_rx, wn, node_id));
+        tokio::spawn(Self::proc_write_queue(r, c, enq_rx, wn, shard_id));
         tokio::spawn(Self::dep_resolver(handle_dep_rx, dep_resolv_rx, m.clone()));
         tokio::spawn(Self::proc_read_queue(handle_read_rx, rn, m));
         return ret;
@@ -133,7 +135,7 @@ impl ShardServer {
         mut ent: WriteQueueEntry,
         raft: Arc<RaftRepl>,
         connections: Arc<ChannelPool<NodeId>>,
-        node_id: u64,
+        shard_id: u32,
     ) {
         // resolve local dependencies, if any
         if let Some(ch) = ent.ch {
@@ -181,20 +183,18 @@ impl ShardServer {
 
                 //Exec notif on transaction manager
                 let resp = ExecNotifRequest {
-                    res: Option::<TxnRes>::from(resp.data),
-                    node_id,
-                    ind: ent.req.ind,
-                    wrong_leader: false,
+                    req_status: Some(ReqStatus::Response(ExecNotifInner {
+                        res: Option::<TxnRes>::from(resp.data),
+                        shard_id,
+                        ind: ent.req.ind,
+                    })),
                 };
                 Self::serve_tail(resp, connections).await;
             }
             Err(err) => match err {
                 ClientWriteError::ForwardToLeader(_) => {
                     let resp = ExecNotifRequest {
-                        res: None,
-                        node_id,
-                        ind: ent.req.ind,
-                        wrong_leader: true,
+                        req_status: Some(ReqStatus::WrongLeader(true)),
                     };
                     Self::serve_tail(resp, connections).await;
                 }
@@ -209,7 +209,7 @@ impl ShardServer {
         connections: Arc<ChannelPool<NodeId>>,
         mut req_ch: mpsc::Receiver<WriteQueueEntry>,
         mut ssn_watch: watch::Receiver<u64>,
-        node_id: u64,
+        shard_id: u32,
     ) {
         let mut write_queue: BTreeMap<u64, WriteQueueEntry> = BTreeMap::new(); // ssn |-> (request details, dep channel)
         let mut curr_ssn: u64 = 0;
@@ -233,7 +233,7 @@ impl ShardServer {
                         ent,
                         raft.clone(),
                         connections.clone(),
-                        node_id,
+                        shard_id,
                     ));
                 }
             } else {
@@ -251,7 +251,7 @@ impl ShardServer {
                         ent,
                         raft.clone(),
                         connections.clone(),
-                        node_id,
+                        shard_id,
                     ));
                 }
             }
@@ -384,7 +384,7 @@ impl ShardService for ShardServer {
     async fn shard_exec_append(
         &self,
         request: Request<ExecAppendRequest>,
-    ) -> Result<Response<ExecAppendReply>, Status> {
+    ) -> Result<Response<ExecNotifRequest>, Status> {
         let req = request.into_inner();
         let state = self.store.state.read().await;
         if req.sn <= state.ssn {
@@ -419,10 +419,18 @@ impl ShardService for ShardServer {
                 ));
             }
 
-            return Ok(Response::new(ExecAppendReply {
-                res: Some(res),
-                shard_id: None,
-                ind: None,
+            // don't want to send empty map
+            let mut res_opt = None;
+            if res.map.len() > 0 {
+                res_opt = Some(res);
+            }
+            
+            return Ok(Response::new(ExecNotifRequest {
+                req_status: Some(ReqStatus::Response(ExecNotifInner {
+                    res: res_opt,
+                    shard_id: self.shard_id,
+                    ind: req.ind,
+                })),
             }));
         } else {
             // send request to queue servicer and give empty response as "promise"
@@ -444,6 +452,7 @@ impl ShardService for ShardServer {
                     panic!("dep_notif receiver dropped");
                 }
             }
+
             if let Err(_) = self
                 .enqueue_reqs
                 .send(WriteQueueEntry { req, ch: dep_ch })
@@ -453,10 +462,8 @@ impl ShardService for ShardServer {
                 panic!("enqueue_reqs receiver dropped");
             }
 
-            return Ok(Response::new(ExecAppendReply {
-                res: None,
-                shard_id: None,
-                ind: None,
+            return Ok(Response::new( ExecNotifRequest {
+                req_status: Some(ReqStatus::Promise(true))
             }));
         }
     }

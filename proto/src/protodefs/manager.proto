@@ -4,7 +4,7 @@ package manager_net;
 
 service ManagerService {
   rpc AppendTransact(AppendTransactRequest) returns (common_decls.Empty);
-  rpc ExecNotif(ExecNotifRequest) returns (common_decls.Empty);
+  rpc ExecNotif(common_decls.ExecNotifRequest) returns (common_decls.Empty);
   rpc ExecAppendTransact(ExecAppendTransactRequest) returns (common_decls.Empty);
   rpc ReadOnlyTransact(ReadOnlyTransactRequest) returns (common_decls.Empty);
 }
@@ -14,13 +14,6 @@ message AppendTransactRequest {
   common_decls.Csn csn = 2;
   uint64 ackBound = 3;
   uint64 ind = 4;
-}
-
-message ExecNotifRequest {
-  optional common_decls.TxnRes res = 1;
-  uint64 nodeId = 2; /// TODO (BUG): This should be shard id
-  uint64 ind = 3;
-  bool wrongLeader = 4; /// optimization, include most recent leader
 }
 
 message ExecAppendTransactRequest {

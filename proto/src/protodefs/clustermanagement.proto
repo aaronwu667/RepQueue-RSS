@@ -4,5 +4,12 @@ package cluster_management_net;
 
 service ClusterManagementService {
   rpc ConnectNode(common_decls.Empty) returns (common_decls.Empty);
-  rpc InitCluster(common_decls.Empty) returns (common_decls.Empty);
+  rpc InitMember(common_decls.Empty) returns (common_decls.Empty);
+  /// Do not support changes in leadership
+  rpc AddMember(NodeId) returns (common_decls.Empty);
+  rpc InitLeader(common_decls.Empty) returns (common_decls.Empty);
+}
+
+message NodeId {
+  uint64 id = 1;
 }

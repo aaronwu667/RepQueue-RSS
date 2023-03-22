@@ -15,6 +15,20 @@ message TransactionOp {
   }  
 }
 
+message ExecNotifRequest {
+  oneof ReqStatus {
+    bool promise = 1;
+    bool wrongLeader = 2;
+    ExecNotifInner response = 3;
+  }
+}
+
+message ExecNotifInner {
+  optional common_decls.TxnRes res = 1; 
+  uint32 shardId = 2; /// TODO (BUG): This should be shard id
+  uint64 ind = 3;
+}
+
 /// placeholder, need to complete this later
 /// ideas: AST, deps labeled by node number, "lazy" eval
 ///  restrict to all conjunctions or all disjunctions

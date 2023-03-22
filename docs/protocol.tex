@@ -147,11 +147,8 @@ Note the variables $cwsn_T$ and $ackBound$. The first of these two guarantees ex
 \begin{procedure}[H]
   \caption{ExecNotif($j$, $ind$, $respData$)}
   \tcp{ExecNotif on tail node $n$}
-  \uIf{$ind \geq exec(Q_n|j)$}{
-    $\text{deq} \leftarrow Q_n|j$\\
-    \While{\upshape $\text{deq} \neq ind$}{
-      $\text{deq} \leftarrow Q_n|j$
-    }
+  \While{\upshape $exec(Q_n|j) < ind$}{
+    $exec(Q_n|j) \leftarrow Q_n|j$
   }
   $C_n[ind].shds := C_n[ind].shds\setminus\{ j\}$\\
   $\text{cwsn} := C_n[ind].cwsn$\\
@@ -171,10 +168,9 @@ Note the variables $cwsn_T$ and $ackBound$. The first of these two guarantees ex
   \caption{ExecAppendTransact($ind$, $data$)}
   \tcp{ExecAppendTransact on node $i \in [1, n]$}
   $\text{cwsn} := C_i[ind].cwsn$\\
-  \ForEach{$j \in C_i[ind].shds : ind \geq exec(Q_i|j)$}{
-    $\text{deq} \leftarrow Q_i|j$ \\
-    \While{\upshape$\text{deq}\neq ind$}{
-      $\text{deq} \leftarrow Q_i | j$
+  \ForEach{$j \in C_i[ind].shds$}{
+    \While{\upshape$exec(Q_i|j) < ind$}{
+      $exec(Q_i|j) \leftarrow Q_i | j$
     }
   }
   $C_i := C_i \setminus \{ind \mapsto C_i[ind] \}$\\ 
@@ -183,7 +179,7 @@ Note the variables $cwsn_T$ and $ackBound$. The first of these two guarantees ex
     $\text{Send}_{\text{cwsn}.cid}(\text{SessionRespWrite}, \{cwsn, W_i[cwsn]\})$
   }
   \Else{
-    $\text{Send}_{\text{pred}}(\text{TransasctExec}, \{ind, data\})$ 
+    $\text{Send}_{\text{pred}}(\text{ExecAppendTransact}, \{ind, data\})$ 
   }
   \textbf{return}
 \end{procedure}
