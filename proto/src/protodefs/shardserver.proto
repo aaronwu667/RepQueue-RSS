@@ -19,7 +19,7 @@ message ExecReadRequest {
   repeated string txn = 1;
   common_decls.Csn csn = 2;
   uint64 fence = 3;
-  uint64 numShards = 4;
+  uint32 numShards = 4;
   string addr = 5; /// so we know where to send results
 }
 

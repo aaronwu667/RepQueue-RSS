@@ -1,5 +1,4 @@
-use std::sync::Arc;
-
+use crate::{ManagerNodeState, NodeStatus};
 use async_trait::async_trait;
 use proto::{
     common_decls::{Empty, ExecNotifRequest},
@@ -8,11 +7,13 @@ use proto::{
         ReadOnlyTransactRequest,
     },
 };
+use replication::channel_pool::ChannelPool;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tonic::{Request, Response, Status};
 
-use crate::{ManagerNodeState, NodeStatus};
 mod read_transaction;
+mod read_utils;
 mod write_transaction;
 
 struct TransactionService {
@@ -20,20 +21,25 @@ struct TransactionService {
     // TODO (low priority): dynamic reconfig and failover
     // TODO (med priority): fair queueing for read-write transactions
     state: Arc<ManagerNodeState>,
+    cluster_conns: Arc<ChannelPool<u32>>,
     new_rq_ch: mpsc::Sender<AppendTransactRequest>,
     exec_notif_ch: Option<mpsc::Sender<ExecNotifRequest>>,
     exec_append_ch: Option<mpsc::Sender<ExecAppendTransactRequest>>,
 }
 
 impl TransactionService {
-    fn new(state: Arc<ManagerNodeState>, node_status: NodeStatus) -> Self {
+    fn new(
+        state: Arc<ManagerNodeState>,
+        cluster_conns: ChannelPool<u32>,
+        node_status: NodeStatus,
+    ) -> Self {
         let (new_req_tx, new_req_rx) = mpsc::channel(5000);
         let (schd_tx, schd_rx) = mpsc::channel(5000);
         let mut exec_tx = None; // RPC handler -> exec notif servicer sender
         let mut exec_append_tx = None;
         let node_status = Arc::new(node_status);
         match &*node_status {
-            NodeStatus::Tail(pred, _) => {
+            NodeStatus::Tail(pred) => {
                 // spawn execNotif handler
                 let (tx, exec_notif_rx) = mpsc::channel(8000);
                 tokio::spawn(Self::aggregate_res(
@@ -64,9 +70,16 @@ impl TransactionService {
             schd_tx,
             node_status.clone(),
         ));
-        tokio::spawn(Self::proc_append(schd_rx, state.clone(), node_status));
+        let cluster_conns = Arc::new(cluster_conns);
+        tokio::spawn(Self::proc_append(
+            schd_rx,
+            state.clone(),
+            node_status,
+            cluster_conns.clone(),
+        ));
         Self {
             state,
+            cluster_conns,
             new_rq_ch: new_req_tx,
             exec_notif_ch: exec_tx,
             exec_append_ch: exec_append_tx,
@@ -126,7 +139,11 @@ impl ManagerService for TransactionService {
         &self,
         request: Request<ReadOnlyTransactRequest>,
     ) -> Result<Response<Empty>, Status> {
-        tokio::spawn(Self::proc_read(request.into_inner(), self.state.clone()));
+        tokio::spawn(Self::proc_read(
+            request.into_inner(),
+            self.state.clone(),
+            self.cluster_conns.clone(),
+        ));
         Ok(Response::new(Empty {}))
     }
 }

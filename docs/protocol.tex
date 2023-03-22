@@ -252,7 +252,7 @@ The utility of $crsn_T$ is the same as in write-only transactions. For every rea
   \caption{ReadOnlyTransact($T$, $isRetry$, $crsn_T$, $writeDep$, $lsnConst$)}
   \SetKwFor{Match}{match}{with:}{end}
   \tcp{ReadOnlyTransact on manager node $i\in[1,n]$}
-  \uIf{$ writeDep \geq\min(W_i^{\text{key}}|cid).num$}{
+  \uIf{$ writeDep \geq\max(W_i^{\text{key}}|cid).num$}{
     \textbf{wait} until $writeDep \in W_i^{\text{key}}$ or $\text{ABORT}(writeDep) $ 
   }
   $fence := -1$\\

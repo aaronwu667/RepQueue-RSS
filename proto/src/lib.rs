@@ -42,7 +42,7 @@ impl TxnRes {
 }
 
 impl SessionRespReadRequest {
-    pub fn new(res: HashMap<String, ValueField>, csn: Option<Csn>, fence: u64, num_shards: u64) -> Self {
+    pub fn new(res: HashMap<String, ValueField>, csn: Option<Csn>, fence: u64, num_shards: u32) -> Self {
         SessionRespReadRequest {
             res,
             csn,

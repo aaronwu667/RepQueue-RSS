@@ -8,8 +8,8 @@ use tonic::{Request, Response, Status};
 
 pub enum InitStatus {
     Connect,
-    InitMember,    
-    InitLeader
+    InitMember,
+    InitLeader,
 }
 
 pub struct ClusterManager {

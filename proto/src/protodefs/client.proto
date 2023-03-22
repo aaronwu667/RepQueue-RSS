@@ -4,11 +4,17 @@ package client_lib;
 
 service ClientLibrary {
   rpc SessionRespRead(SessionRespReadRequest) returns (common_decls.Empty);
+  rpc SessionRespWrite(SessionRespWriteRequest) returns (common_decls.Empty);
 }
 
 message SessionRespReadRequest {
   map<string, common_decls.ValueField> res = 1;
   common_decls.Csn csn = 2;
   uint64 fence = 3;
-  uint64 numShards = 4;
+  uint32 numShards = 4;
+}
+
+message SessionRespWriteRequest {
+  optional common_decls.TxnRes res = 1;
+  common_decls.Csn csn = 2;  
 }

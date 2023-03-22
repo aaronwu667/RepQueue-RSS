@@ -1,21 +1,22 @@
+use super::TransactionService;
+use crate::{
+    rpc_utils::{send_chain_rpc, send_client_rpc, send_cluster_rpc, RPCRequest},
+    state_update::{update_view, update_view_tail},
+    ManagerNodeState, NodeStatus, TransactionEntry, TxnStatus,
+};
+use proto::{
+    client_lib::{SessionRespReadRequest, SessionRespWriteRequest},
+    common_decls::{exec_notif_request::ReqStatus, Csn, ExecNotifRequest, TxnRes},
+    manager_net::{AppendTransactRequest, ExecAppendTransactRequest},
+    shard_net::ExecAppendRequest,
+};
+use replication::channel_pool::ChannelPool;
 use std::{
     collections::{hash_map::Entry::*, BTreeMap, HashMap, VecDeque},
     sync::Arc,
 };
-
-use proto::{
-    common_decls::{exec_notif_request::ReqStatus, Csn, ExecNotifRequest, TxnRes},
-    manager_net::{AppendTransactRequest, ExecAppendTransactRequest},
-};
 use tokio::sync::mpsc;
 use tonic::transport::Channel;
-
-use super::TransactionService;
-use crate::{
-    rpc_utils::{send_chain_rpc, send_exec, RPCRequest},
-    state_update::{update_view, update_view_tail},
-    ManagerNodeState, NodeStatus, TxnStatus,
-};
 
 impl TransactionService {
     // TODO (low priority): periodic check for subtransactions to retry
@@ -34,7 +35,7 @@ impl TransactionService {
             if let Some(req) = exec_append_ch.recv().await {
                 // update queues
                 let mut ind_to_sh = state.ind_to_sh.lock().await;
-                let (Csn { cid, sn: csn_num }, shards) = match ind_to_sh.remove(&req.ind) {
+                let (csn, shards) = match ind_to_sh.remove(&req.ind) {
                     Some(ent) => ent,
                     None => panic!("No entry associated with log index"),
                 };
@@ -53,22 +54,40 @@ impl TransactionService {
                 drop(txn_queues);
 
                 // update ongoing transactions
-                let mut ongoing_txns = state.ongoing_txs.lock().await;
-                let status = match ongoing_txns
-                    .get_mut(&cid)
-                    .and_then(|csn_map| csn_map.get_mut(&csn_num))
+                let mut ongoing_txns = state.ongoing_txs.write().await;
+                let transaction = match ongoing_txns
+                    .get_mut(&csn.cid)
+                    .and_then(|csn_map| csn_map.get_mut(&csn.sn))
                 {
                     Some(s) => s,
                     None => panic!("Missing appropriate entries in ongoing transactions"),
                 };
-                *status = (TxnStatus::Done, req.res.clone());
+
+                let addr = match transaction {
+                    TxnStatus::InProg(e) => {
+                        let copy_addr = e.addr.to_owned();
+                        *transaction = TxnStatus::Done(TransactionEntry::new_res(
+                            req.res.clone(),
+                            copy_addr.clone(),
+                        ));
+                        copy_addr
+                    }
+                    TxnStatus::Done(e) => e.addr.to_owned(),
+                    _ => {
+                        panic!("Finished transaction marked as not started")
+                    }
+                };
                 drop(ongoing_txns);
 
                 // send result to client if head, otherwise continue backwards ack
                 if let Some(ref ch) = pred {
-                    send_chain_rpc(RPCRequest::ExecAppend(req), ch.clone()).await;
+                    send_chain_rpc(RPCRequest::ExecAppendTransact(req), ch.clone()).await;
                 } else {
-                    // TODO SessionRespWrite
+                    let resp = SessionRespWriteRequest {
+                        res: req.res,
+                        csn: Some(csn),
+                    };
+                    send_client_rpc(RPCRequest::SessResponseWrite(resp), addr).await;
                 }
             } else {
                 panic!("Exec append channel closed");
@@ -119,15 +138,29 @@ impl TransactionService {
                 drop(ind_to_sh);
 
                 // update ongoing txn map
-                let mut ongoing_txns = state.ongoing_txs.lock().await;
-                let status = match ongoing_txns
+                let mut ongoing_txns = state.ongoing_txs.write().await;
+                let transaction = match ongoing_txns
                     .get_mut(&cid)
                     .and_then(|csn_map| csn_map.get_mut(&csn_num))
                 {
                     Some(s) => s,
                     None => panic!("Missing appropriate entries in ongoing transactions"),
                 };
-                match (partial_res.res, status.1.as_mut()) {
+                // view consistency check
+                let transact_ent = match transaction {
+                    TxnStatus::InProg(e) => e,
+                    TxnStatus::Done(e) => {
+                        if !done {
+                            panic!("Transaction marked as done, but responses not recieved from all shards")
+                        }
+                        e
+                    }
+                    TxnStatus::NotStarted(_) => {
+                        panic!("Transaction marked as not started is being executed")
+                    }
+                };
+                // merge results into existing
+                match (partial_res.res, transact_ent.result.as_mut()) {
                     (Some(res), Some(resp_data)) => {
                         for (k, v) in res.map {
                             resp_data.map.insert(k, v);
@@ -135,17 +168,26 @@ impl TransactionService {
                     }
                     (Some(res), None) => {
                         let map = HashMap::from(res.map);
-                        status.1 = Some(TxnRes { map });
+                        (*transact_ent).result = Some(TxnRes { map });
                     }
                     (None, None) | (None, Some(_)) => (),
                 };
+
+                // backwards ack through chain if done
                 if done {
-                    status.0 = TxnStatus::Done;
+                    let res = transact_ent.result.clone();
+                    *transaction = TxnStatus::Done(TransactionEntry::new_res(
+                        res.clone(),
+                        transact_ent.addr.to_owned(),
+                    ));
                     let req = ExecAppendTransactRequest {
                         ind: partial_res.ind,
-                        res: status.1.clone(),
+                        res,
                     };
-                    tokio::spawn(send_chain_rpc(RPCRequest::ExecAppend(req), pred.clone()));
+                    tokio::spawn(send_chain_rpc(
+                        RPCRequest::ExecAppendTransact(req),
+                        pred.clone(),
+                    ));
                 }
                 drop(ongoing_txns);
             } else {
@@ -158,6 +200,7 @@ impl TransactionService {
         mut proc_ch: mpsc::Receiver<AppendTransactRequest>,
         state: Arc<ManagerNodeState>,
         node_state: Arc<NodeStatus>,
+        cluster_conns: Arc<ChannelPool<u32>>,
     ) {
         let mut log = VecDeque::<AppendTransactRequest>::new();
 
@@ -166,14 +209,27 @@ impl TransactionService {
                 let ind = log.len();
                 log.push_back(released_req.clone());
                 let csn = released_req.csn.as_ref().unwrap();
-                let mut ongoing_txns = state.ongoing_txs.lock().await;
-                ongoing_txns
-                    .entry(csn.cid)
-                    .and_modify(|m| {
-                        m.insert(csn.sn, (TxnStatus::InProg, None));
-                        m.retain(|k, _| *k >= released_req.ack_bound)
-                    })
-                    .or_insert(BTreeMap::from([(csn.sn, (TxnStatus::InProg, None))]));
+                let addr = released_req.addr.clone();
+                let mut ongoing_txns = state.ongoing_txs.write().await;
+                match ongoing_txns.entry(csn.cid) {
+                    Occupied(mut o) => {
+                        if let Some(old_ent) = o
+                            .get_mut()
+                            .insert(csn.sn, TxnStatus::InProg(TransactionEntry::new(addr)))
+                        {
+                            if let TxnStatus::NotStarted(notif) = old_ent {
+                                notif.notify_waiters();
+                            }
+                        }
+                        o.get_mut().retain(|k, _| *k >= released_req.ack_bound);
+                    }
+                    Vacant(v) => {
+                        v.insert(BTreeMap::from([(
+                            csn.sn,
+                            TxnStatus::InProg(TransactionEntry::new(addr)),
+                        )]));
+                    }
+                };
                 drop(ongoing_txns);
 
                 match &*node_state {
@@ -183,20 +239,27 @@ impl TransactionService {
                             ind: u64::try_from(ind).unwrap(),
                             ..released_req
                         };
-                        tokio::spawn(send_chain_rpc(RPCRequest::Append(new_req), succ.clone()));
+                        tokio::spawn(send_chain_rpc(
+                            RPCRequest::AppendTransact(new_req),
+                            succ.clone(),
+                        ));
                     }
                     NodeStatus::Middle(_, succ) => {
                         update_view(&state, ind, csn.clone(), &released_req.txn).await;
                         tokio::spawn(send_chain_rpc(
-                            RPCRequest::Append(released_req),
+                            RPCRequest::AppendTransact(released_req),
                             succ.clone(),
                         ));
                     }
-                    NodeStatus::Tail(_, cluster) => {
+                    NodeStatus::Tail(_) => {
                         let reqs =
                             update_view_tail(&state, ind, csn.clone(), released_req.txn).await;
                         for (k, v) in reqs.into_iter() {
-                            tokio::spawn(send_exec(k, v, cluster.clone()));
+                            tokio::spawn(send_cluster_rpc(
+                                k,
+                                RPCRequest::ExecAppend(v),
+                                cluster_conns.clone(),
+                            ));
                         }
                     }
                 }
@@ -258,11 +321,11 @@ impl TransactionService {
         loop {
             let new_req = append_ch.recv().await;
             if let Some(new_req) = new_req {
-                let Csn { cid, sn: csn_num } = new_req.csn.as_ref().unwrap();
-                match client_queue.entry(*cid) {
+                let csn = new_req.csn.as_ref().unwrap();
+                match client_queue.entry(csn.cid) {
                     Occupied(mut o) => {
                         let (greatest_csn, queue) = o.get_mut();
-                        if *csn_num == *greatest_csn + 1 {
+                        if csn.sn == *greatest_csn + 1 {
                             // If no reordering, check for log reordering and service
                             Self::log_send_or_queue(
                                 new_req,
@@ -298,15 +361,22 @@ impl TransactionService {
                                 .await;
                             }
                             *greatest_csn = curr_sn;
-                        } else if *csn_num <= *greatest_csn {
+                        } else if csn.sn <= *greatest_csn {
                             // Have seen this sequence number before
                             // Check if we have a response ready
-                            let ongoing_txns = state.ongoing_txs.lock().await;
-                            match (&*node_state, ongoing_txns.get(&cid)) {
+                            let ongoing_txns = state.ongoing_txs.read().await;
+                            match (&*node_state, ongoing_txns.get(&csn.cid)) {
                                 (NodeStatus::Head(_), Some(csn_map)) => {
-                                    if let Some(status_tup) = csn_map.get(csn_num) {
-                                        if let TxnStatus::Done = status_tup.0 {
-                                            // TODO SessionRespWrite
+                                    if let Some(status) = csn_map.get(&csn.sn) {
+                                        if let TxnStatus::Done(txn_entry) = status {
+                                            let resp = SessionRespWriteRequest {
+                                                csn: Some(csn.clone()),
+                                                res: txn_entry.result.clone(),
+                                            };
+                                            tokio::spawn(send_client_rpc(
+                                                RPCRequest::SessResponseWrite(resp),
+                                                new_req.addr,
+                                            ));
                                         }
                                     }
                                 }
@@ -314,13 +384,13 @@ impl TransactionService {
                             }
                         } else {
                             // Otherwise, put onto queue for waiting
-                            queue.insert(*csn_num, new_req);
+                            queue.insert(csn.sn, new_req);
                         }
                     }
                     Vacant(v) => {
                         let mut last_exec = 0;
                         let mut new_map = BTreeMap::new();
-                        if *csn_num == 1 {
+                        if csn.sn == 1 {
                             Self::log_send_or_queue(
                                 new_req,
                                 &mut log_ind,
@@ -331,7 +401,7 @@ impl TransactionService {
                             .await;
                             last_exec = 1;
                         } else {
-                            new_map.insert(*csn_num, new_req);
+                            new_map.insert(csn.sn, new_req);
                         }
                         v.insert((last_exec, new_map));
                     }
