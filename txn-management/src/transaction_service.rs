@@ -16,8 +16,8 @@ mod read_transaction;
 mod read_utils;
 mod write_transaction;
 
-struct TransactionService {
-    // TODO (low priority): no lock timeout checking
+pub struct TransactionService {
+    // TODO (low priority): timeout checking
     // TODO (low priority): dynamic reconfig and failover
     // TODO (med priority): fair queueing for read-write transactions
     state: Arc<ManagerNodeState>,
@@ -28,16 +28,15 @@ struct TransactionService {
 }
 
 impl TransactionService {
-    fn new(
+    pub fn new(
         state: Arc<ManagerNodeState>,
-        cluster_conns: ChannelPool<u32>,
-        node_status: NodeStatus,
+        cluster_conns: Arc<ChannelPool<u32>>,
+        node_status: Arc<NodeStatus>,
     ) -> Self {
         let (new_req_tx, new_req_rx) = mpsc::channel(5000);
         let (schd_tx, schd_rx) = mpsc::channel(5000);
         let mut exec_tx = None; // RPC handler -> exec notif servicer sender
         let mut exec_append_tx = None;
-        let node_status = Arc::new(node_status);
         match &*node_status {
             NodeStatus::Tail(pred) => {
                 // spawn execNotif handler
@@ -70,7 +69,6 @@ impl TransactionService {
             schd_tx,
             node_status.clone(),
         ));
-        let cluster_conns = Arc::new(cluster_conns);
         tokio::spawn(Self::proc_append(
             schd_rx,
             state.clone(),

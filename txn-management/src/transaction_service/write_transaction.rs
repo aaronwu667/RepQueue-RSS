@@ -2,13 +2,12 @@ use super::TransactionService;
 use crate::{
     rpc_utils::{send_chain_rpc, send_client_rpc, send_cluster_rpc, RPCRequest},
     state_update::{update_view, update_view_tail},
-    ManagerNodeState, NodeStatus, TransactionEntry, TxnStatus,
+    Connection, ManagerNodeState, NodeStatus, TransactionEntry, TxnStatus,
 };
 use proto::{
-    client_lib::{SessionRespReadRequest, SessionRespWriteRequest},
-    common_decls::{exec_notif_request::ReqStatus, Csn, ExecNotifRequest, TxnRes},
+    client_lib::SessionRespWriteRequest,
+    common_decls::{exec_notif_request::ReqStatus, ExecNotifRequest, TxnRes},
     manager_net::{AppendTransactRequest, ExecAppendTransactRequest},
-    shard_net::ExecAppendRequest,
 };
 use replication::channel_pool::ChannelPool;
 use std::{
@@ -16,10 +15,10 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::mpsc;
-use tonic::transport::Channel;
 
 impl TransactionService {
     // TODO (low priority): periodic check for subtransactions to retry
+    // TODO (high priority): join! instead of sequential awaits
     #[allow(dead_code)]
     async fn timeout_check() {
         todo!()
@@ -29,7 +28,7 @@ impl TransactionService {
     pub(super) async fn proc_exec_append(
         state: Arc<ManagerNodeState>,
         mut exec_append_ch: mpsc::Receiver<ExecAppendTransactRequest>,
-        pred: Option<Channel>,
+        pred: Option<Arc<Connection>>,
     ) {
         loop {
             if let Some(req) = exec_append_ch.recv().await {
@@ -99,7 +98,7 @@ impl TransactionService {
     pub(super) async fn aggregate_res(
         state: Arc<ManagerNodeState>,
         mut exec_ch: mpsc::Receiver<ExecNotifRequest>,
-        pred: Channel,
+        pred: Arc<Connection>,
     ) {
         loop {
             if let Some(partial_res) = exec_ch.recv().await {

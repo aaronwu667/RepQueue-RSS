@@ -1,14 +1,12 @@
 use proto::{
     client_lib::{client_library_client::ClientLibraryClient, SessionRespWriteRequest},
-    manager_net::{
-        manager_service_client::ManagerServiceClient, AppendTransactRequest,
-        ExecAppendTransactRequest,
-    },
+    manager_net::{AppendTransactRequest, ExecAppendTransactRequest},
     shard_net::{shard_service_client::ShardServiceClient, ExecAppendRequest, ExecReadRequest},
 };
 use replication::channel_pool::ChannelPool;
 use std::sync::Arc;
-use tonic::transport::Channel;
+
+use crate::Connection;
 
 // boilerplate for sending RPCs
 pub(crate) enum RPCRequest {
@@ -33,8 +31,8 @@ pub(crate) async fn send_client_rpc(req: RPCRequest, addr: String) {
     }
 }
 
-pub(crate) async fn send_chain_rpc(req: RPCRequest, ch: Channel) {
-    let mut client = ManagerServiceClient::new(ch.clone());
+pub(crate) async fn send_chain_rpc(req: RPCRequest, conn: Arc<Connection>) {
+    let mut client = conn.get_client().await;
     match req {
         RPCRequest::AppendTransact(req) => {
             if let Err(e) = client.append_transact(req).await {

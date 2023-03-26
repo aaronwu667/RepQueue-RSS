@@ -1,55 +1,119 @@
+use std::{sync::Arc, collections::BTreeSet};
+
 use async_trait::async_trait;
+use openraft::{Config, Raft};
 use proto::{
     cluster_management_net::{cluster_management_service_server::ClusterManagementService, NodeId},
     common_decls::Empty,
+    raft_net::raft_service_server::RaftServiceServer,
+    shard_net::shard_service_server::ShardServiceServer,
 };
-use tokio::sync::mpsc::Sender;
-use tonic::{Request, Response, Status};
+use tokio::sync::watch;
+use tonic::{transport::Server, Request, Response, Status};
 
-pub enum InitStatus {
-    Connect,
-    InitMember,
-    AddMember(u64),
-    InitLeader,
-}
+use crate::{
+    channel_pool::ChannelPool, network::BaseNetwork, raft_service::RaftServer,
+    shard_service::ShardServer, version_store::MemStore, StoreRequest, StoreResponse,
+};
 
 pub struct ClusterManager {
-    handle: Sender<InitStatus>,
+    node_id: u64,
+    raft: Arc<Raft<StoreRequest, StoreResponse, BaseNetwork, MemStore>>,
+    conn_pool: Arc<ChannelPool<u64>>,
 }
 
+// TODO(low priority): Metrics and monitoring
 impl ClusterManager {
-    pub fn new(handle: Sender<InitStatus>) -> Self {
-        ClusterManager { handle }
+    pub fn new(
+        shard_id: u32,
+        node_id: u64,
+        my_cluster_addr: std::net::SocketAddr,
+        conn_pool: ChannelPool<u64>,
+    ) -> Self {
+        let conn_pool = Arc::new(conn_pool);
+
+        // init raft
+        let config = Arc::new(Config::default().validate().unwrap());
+        let (write_notif, ssn_watch) = watch::channel(0);
+        let (read_notif, sh_exec_watch) = watch::channel(0);
+        let store = Arc::new(MemStore::new(write_notif, read_notif));
+        let network = Arc::new(BaseNetwork::new(conn_pool.clone()));
+        let raft = Arc::new(Raft::new(node_id, config, network, store.clone()));
+
+        // start servers
+        tokio::spawn({
+            let raft = raft.clone();
+            let conn_pool = conn_pool.clone();
+            async move {
+                let raft_server = RaftServiceServer::new(RaftServer::new(raft.clone()));
+                let shard_server = ShardServiceServer::new(ShardServer::new(
+                    raft.clone(),
+                    conn_pool.clone(),
+                    store.clone(),
+                    shard_id,
+                    ssn_watch,
+                    sh_exec_watch,
+                ));
+                // as per docs, will panic if binding to addr fails
+                if let Err(_) = Server::builder()
+                    .add_service(shard_server)
+                    .add_service(raft_server)
+                    .serve(my_cluster_addr)
+                    .await
+                {
+                    panic!("Raft and shard service failure")
+                }
+            }
+        });
+
+        Self {
+            node_id,
+            raft,
+            conn_pool,
+        }
     }
 }
 
 #[async_trait]
 impl ClusterManagementService for ClusterManager {
     async fn connect_node(&self, _: Request<Empty>) -> Result<Response<Empty>, Status> {
-        if let Err(_) = self.handle.send(InitStatus::Connect).await {
-            panic!("sending on cluster management handle failed, cluster may already be running");
+        match self.conn_pool.connect().await {
+            Ok(()) => return Ok(Response::new(Empty {})),
+            Err(s) => return Err(Status::internal(s)),
         }
-        return Ok(Response::new(Empty {}));
     }
 
-    async fn init_member(&self, _: Request<Empty>) -> Result<Response<Empty>, Status> {
-        if let Err(_) = self.handle.send(InitStatus::InitMember).await {
-            panic!("sending on cluster management handle failed, cluster may already be running");
+    async fn start_cluster(&self, _: Request<Empty>) -> Result<Response<Empty>, Status> {
+        if self.node_id == 1 {
+            let nids : BTreeSet<u64> = self.conn_pool.get_all_nodes().await;
+            match self.raft.change_membership(nids, true).await {
+                Ok(_) => return Ok(Response::new(Empty {  })),
+                Err(_) => return Err(Status::internal("Cluster init error"))
+            }
+        } else {
+            return Err(Status::invalid_argument("Node is not leader"))
         }
-        return Ok(Response::new(Empty {}));
     }
 
     async fn add_member(&self, req: Request<NodeId>) -> Result<Response<Empty>, Status> {
-        if let Err(_) = self.handle.send(InitStatus::AddMember(req.into_inner().id)).await {
-            panic!("sending on cluster management handle failed, cluster may already be running");
+        if self.node_id == 1 {
+            match self.raft.add_learner(req.into_inner().id, true).await {
+                Ok(_) => return Ok(Response::new(Empty {  })),
+                Err(_) => return Err(Status::internal("Learner addition error"))
+            }
+        } else {
+            return Err(Status::invalid_argument("Node is not leader"))
         }
-        return Ok(Response::new(Empty {}));
     }
 
     async fn init_leader(&self, _: Request<Empty>) -> Result<Response<Empty>, Status> {
-        if let Err(_) = self.handle.send(InitStatus::InitLeader).await {
-            panic!("sending on cluster management handle failed, cluster may already be running");
+        if self.node_id == 1 {
+            match self.raft.initialize(BTreeSet::from([1])).await {
+                Ok(_) => return Ok(Response::new(Empty {})),
+                Err(_) => return Err(Status::internal("Initialization error"))
+            }
+        } else {
+            return Err(Status::invalid_argument("Node is not leader"))
         }
-        return Ok(Response::new(Empty {}));
     }
 }

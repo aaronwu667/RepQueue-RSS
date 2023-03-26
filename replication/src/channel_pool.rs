@@ -1,11 +1,16 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use tokio::sync::RwLock;
-use tonic::transport::Channel;
+use tonic::transport::{Channel, Endpoint};
 
 // A thread-safe pool of connections
 // TODO (low priority): clean this mess up and dynamic connection management
+enum ChanStatus {
+    Init(Channel),
+    NotInit(Endpoint),
+}
+
 pub struct ChannelPool<T> {
-    channels: RwLock<HashMap<T, Channel>>,
+    channels: RwLock<HashMap<T, ChanStatus>>,
 }
 
 impl<T> ChannelPool<T>
@@ -14,41 +19,63 @@ where
         + std::hash::Hash
         + std::fmt::Display
         + std::convert::TryFrom<usize>
-        + std::fmt::Debug,
+        + std::fmt::Debug
+        + Copy
+        + std::cmp::Ord,
+    T::Error: std::fmt::Debug,
 {
-    pub fn new() -> Self {
+    pub fn new(addrs: Vec<String>) -> Self {
+        let mut new_map = HashMap::new();
+        for (i, addr) in addrs.into_iter().enumerate() {
+            new_map.insert(
+                T::try_from(i).unwrap(),
+                ChanStatus::NotInit(Endpoint::from_shared(addr).unwrap()),
+            );
+        }
         Self {
-            channels: RwLock::new(HashMap::new()),
+            channels: RwLock::new(new_map),
         }
     }
 
-    // block until all connections established
     // just use static conf for convenience
-    #[tokio::main]
-    pub async fn init(&mut self, a: Vec<String>)
-    where
-        T::Error: std::fmt::Debug,
-    {
+    pub async fn connect(&self) -> Result<(), String> {
         let mut channels = self.channels.write().await;
-        for (i, addr) in a.into_iter().enumerate() {
-            match Channel::from_shared(addr.to_owned()) {
-                Ok(chan) => match chan.connect().await {
+        for (i, addr) in channels.values_mut().enumerate() {
+            match addr {
+                ChanStatus::NotInit(endpt) => match endpt.connect().await {
                     Ok(connection) => {
-                        channels.insert(T::try_from(i).unwrap(), connection);
+                        *addr = ChanStatus::Init(connection);
                     }
-                    _ => panic!("Connection to node {} failed with addr {}", i, addr),
+                    _ => {
+                        return Err(format!(
+                            "Connection to node {} failed with addr {}",
+                            i,
+                            endpt.uri()
+                        ))
+                    }
                 },
-                _ => panic!("Malformed address {}", addr),
+                _ => (),
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn get_client<V>(&self, f: fn(Channel) -> V, node: T) -> V {
+        let channels = self.channels.read().await;
+        let ent = match channels.get(&node) {
+            Some(status) => status,
+            None => panic!("No channel associated with node {}", node),
+        };
+        match ent {
+            ChanStatus::Init(chan) => return f(chan.clone()),
+            ChanStatus::NotInit(_) => {
+                panic!("Dynamic connection not implemented")
             }
         }
     }
 
-    // should pass in callback to return some sort of client
-    pub async fn get_client<V>(&self, f: fn(Channel) -> V, node: T) -> V {
+    pub async fn get_all_nodes(&self) -> BTreeSet<T> {
         let channels = self.channels.read().await;
-        match channels.get(&node) {
-            Some(chan) => return f(chan.clone()),
-            None => panic!("No channel associated with node {}", node),
-        }
+        channels.keys().map(|e| *e).collect()
     }
 }
