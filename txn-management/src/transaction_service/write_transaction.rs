@@ -1,9 +1,10 @@
 use super::TransactionService;
-use crate::{
+use super::{
     rpc_utils::{send_chain_rpc, send_client_rpc, send_cluster_rpc, RPCRequest},
-    state_update::{update_view, update_view_tail},
-    Connection, ManagerNodeState, NodeStatus, TransactionEntry, TxnStatus,
+    write_utils::{update_view, update_view_tail},
 };
+use super::{ManagerNodeState, TransactionEntry, TxnStatus};
+use crate::{Connection, NodeStatus};
 use proto::{
     client_lib::SessionRespWriteRequest,
     common_decls::{exec_notif_request::ReqStatus, ExecNotifRequest, TxnRes},

@@ -1,7 +1,4 @@
-use crate::rpc_utils::send_cluster_rpc;
-use crate::rpc_utils::RPCRequest;
-use crate::ManagerNodeState;
-use crate::TxnStatus;
+use super::rpc_utils::{send_cluster_rpc, RPCRequest};
 use proto::manager_net::ReadOnlyTransactRequest;
 use proto::shard_net::ExecReadRequest;
 use replication::channel_pool::ChannelPool;
@@ -13,7 +10,9 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 
 use super::read_utils::get_queue_fence;
+use super::ManagerNodeState;
 use super::TransactionService;
+use super::TxnStatus;
 
 // Read only transactions
 // TODO (high priority): Support client sessions

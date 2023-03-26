@@ -1,4 +1,3 @@
-use crate::{get_buckets, ManagerNodeState};
 use fasthash::xx;
 use proto::common_decls::{Csn, TransactionOp};
 use proto::shard_net::ExecAppendRequest;
@@ -6,8 +5,11 @@ use std::collections::hash_map::Entry::*;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Bound::*;
 
+use super::ManagerNodeState;
+use super::sharding::get_buckets;
+
 // utils for transaction service
-pub(crate) async fn update_view(
+pub(super) async fn update_view(
     state: &ManagerNodeState,
     ind: usize,
     csn: Csn,
@@ -55,7 +57,7 @@ pub(crate) async fn update_view(
 }
 
 // TODO(med priority): dependency analysis in loop
-pub(crate) async fn update_view_tail(
+pub(super) async fn update_view_tail(
     state: &ManagerNodeState,
     ind: usize,
     csn: Csn,

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use proto::{
@@ -7,10 +7,9 @@ use proto::{
     manager_net::manager_service_server::ManagerServiceServer,
 };
 use replication::channel_pool::ChannelPool;
-use tokio::sync::{Mutex, RwLock};
 use tonic::{transport::Server, Request, Response, Status};
 
-use crate::{transaction_service::TransactionService, ManagerNodeState, NodeStatus};
+use crate::{transaction_service::TransactionService, NodeStatus};
 
 pub struct ClusterManager {
     node_status: Arc<NodeStatus>,
@@ -24,26 +23,6 @@ impl ClusterManager {
         num_shards: u32,
         conn_pool: ChannelPool<u32>,
     ) -> Self {
-        // init data structures
-        let mut ssn_map = HashMap::new();
-        for i in 0..num_shards {
-            ssn_map.insert(i, 1);
-        }
-        let ongoing_txs = RwLock::new(HashMap::new());
-        let txn_queues = RwLock::new(HashMap::new());
-        let ind_to_sh = Mutex::new(HashMap::new());
-        let ssn_map = Mutex::new(ssn_map);
-        let read_meta = Mutex::new(HashMap::new());
-        let manager_node_state = ManagerNodeState {
-            ongoing_txs,
-            txn_queues,
-            ind_to_sh,
-            ssn_map,
-            num_shards,
-            read_meta,
-        };
-        let manager_node_state = Arc::new(manager_node_state);
-
         // network related data
         let node_status = Arc::new(node_status);
         let conn_pool = Arc::new(conn_pool);
@@ -53,7 +32,7 @@ impl ClusterManager {
             let conn_pool = conn_pool.clone();
             async move {
                 let txn_service = ManagerServiceServer::new(TransactionService::new(
-                    manager_node_state,
+                    num_shards,
                     conn_pool,
                     node_status,
                 ));

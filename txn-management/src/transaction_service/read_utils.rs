@@ -1,4 +1,5 @@
-use crate::{get_buckets, ManagerNodeState};
+use super::ManagerNodeState;
+use super::sharding::get_buckets;
 use fasthash::xx;
 use std::ops::Bound::*;
 use std::{cmp::max, collections::HashMap};

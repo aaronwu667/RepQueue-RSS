@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::Connection;
 
 // boilerplate for sending RPCs
-pub(crate) enum RPCRequest {
+pub(super) enum RPCRequest {
     AppendTransact(AppendTransactRequest),
     ExecAppendTransact(ExecAppendTransactRequest),
     ExecAppend(ExecAppendRequest),
@@ -17,7 +17,7 @@ pub(crate) enum RPCRequest {
     SessResponseWrite(SessionRespWriteRequest),
 }
 
-pub(crate) async fn send_client_rpc(req: RPCRequest, addr: String) {
+pub(super) async fn send_client_rpc(req: RPCRequest, addr: String) {
     match req {
         RPCRequest::SessResponseWrite(req) => match ClientLibraryClient::connect(addr).await {
             Ok(mut c) => {
@@ -31,7 +31,7 @@ pub(crate) async fn send_client_rpc(req: RPCRequest, addr: String) {
     }
 }
 
-pub(crate) async fn send_chain_rpc(req: RPCRequest, conn: Arc<Connection>) {
+pub(super) async fn send_chain_rpc(req: RPCRequest, conn: Arc<Connection>) {
     let mut client = conn.get_client().await;
     match req {
         RPCRequest::AppendTransact(req) => {
@@ -48,7 +48,7 @@ pub(crate) async fn send_chain_rpc(req: RPCRequest, conn: Arc<Connection>) {
     }
 }
 
-pub(crate) async fn send_cluster_rpc(sid: u32, req: RPCRequest, pool: Arc<ChannelPool<u32>>) {
+pub(super) async fn send_cluster_rpc(sid: u32, req: RPCRequest, pool: Arc<ChannelPool<u32>>) {
     let mut client = pool
         .get_client(|c| ShardServiceClient::new(c.clone()), sid)
         .await;
