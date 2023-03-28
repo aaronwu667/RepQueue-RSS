@@ -12,6 +12,7 @@ replication = {path = "../replication"}
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
 async-trait = "*"
 fasthash = "0.4"
+futures = "0.3"
 
 [build-dependencies]
 tonic-build = "0.8"

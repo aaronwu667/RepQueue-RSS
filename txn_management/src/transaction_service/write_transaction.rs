@@ -5,7 +5,6 @@ use super::{
 };
 use super::{ManagerNodeState, TransactionEntry, TxnStatus};
 use crate::{Connection, NodeStatus};
-use proto::common_decls::Csn;
 use proto::{
     client_lib::SessionRespWriteRequest,
     common_decls::{exec_notif_request::ReqStatus, ExecNotifRequest, TxnRes},
@@ -16,7 +15,7 @@ use std::{
     collections::{hash_map::Entry::*, BTreeMap, HashMap, VecDeque},
     sync::Arc,
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 
 impl TransactionService {
     // TODO (low priority): periodic check for subtransactions to retry
@@ -55,7 +54,7 @@ impl TransactionService {
                 drop(txn_queues);
 
                 // update ongoing transactions
-                let mut ongoing_txns = state.ongoing_txs.write().await;
+                let mut ongoing_txns = state.ongoing_txs.lock().await;
                 let transaction = match ongoing_txns
                     .get_mut(&csn.cid)
                     .and_then(|csn_map| csn_map.get_mut(&csn.sn))
@@ -139,7 +138,7 @@ impl TransactionService {
                 drop(ind_to_sh);
 
                 // update ongoing txn map
-                let mut ongoing_txns = state.ongoing_txs.write().await;
+                let mut ongoing_txns = state.ongoing_txs.lock().await;
                 let transaction = match ongoing_txns
                     .get_mut(&cid)
                     .and_then(|csn_map| csn_map.get_mut(&csn_num))
@@ -156,7 +155,7 @@ impl TransactionService {
                         }
                         e
                     }
-                    TxnStatus::NotStarted(_) => {
+                    TxnStatus::NotStarted(_, _) => {
                         panic!("Transaction marked as not started is being executed")
                     }
                 };
@@ -199,58 +198,27 @@ impl TransactionService {
 
     pub(super) async fn proc_append(
         mut schd_rx: mpsc::Receiver<AppendTransactRequest>,
-        mut register_dep_rx: mpsc::Receiver<(Csn, watch::Sender<bool>)>,
         state: Arc<ManagerNodeState>,
         node_state: Arc<NodeStatus>,
         cluster_conns: Arc<ChannelPool<u32>>,
     ) {
         let mut log = VecDeque::<AppendTransactRequest>::new();
-        let mut watch_map = HashMap::<(u64, u64), watch::Sender<bool>>::new();
         loop {
-            tokio::select! {
-                sender = register_dep_rx.recv() => {
-                    let new_watch = match sender {
-                        Some(s) => s,
-                        None => panic!("Register channel sender closed")
-                    };
-                    let ongoing_txns = state.ongoing_txs.read().await;
-                    let entry = match ongoing_txns
-                        .get(&new_watch.0.cid)
-                        .and_then(|csn_map| csn_map.get(&new_watch.0.sn)) {
-                            Some(ent) => ent,
-                            None => panic!("Read meta incorrect")
-                        };
-                    match entry {
-                        TxnStatus::InProg(_) | TxnStatus::Done(_) => {
-                            if let Err(_) = new_watch.1.send(true) {
-                                panic!("All watch receivers dropped")
-                            }
-                        }
-                        _ => {
-                            watch_map.insert((new_watch.0.cid, new_watch.0.sn),
-                                             new_watch.1);
-                        }
-                    }
-                },
-                req = schd_rx.recv() => {
-                    let released_req = match req {
-                        Some(req) => req,
-                        None => panic!("Processing channel sender closed")
-                    };
+            match schd_rx.recv().await {
+                Some(released_req) => {
                     let ind = log.len();
                     log.push_back(released_req.clone());
                     let csn = released_req.csn.as_ref().unwrap();
                     let addr = released_req.addr.clone();
-                    let mut ongoing_txns = state.ongoing_txs.write().await;
+                    let mut ongoing_txns = state.ongoing_txs.lock().await;
                     match ongoing_txns.entry(csn.cid) {
                         Occupied(mut o) => {
                             if let Some(old_ent) = o
                                 .get_mut()
                                 .insert(csn.sn, TxnStatus::InProg(TransactionEntry::new(addr)))
                             {
-                                if let TxnStatus::NotStarted(_) = old_ent {
-                                    let watch = watch_map.remove(&(csn.cid, csn.sn)).unwrap();
-                                    if let Err(_) = watch.send(true) {
+                                if let TxnStatus::NotStarted(_, notif) = old_ent {
+                                    if let Err(_) = notif.send(true) {
                                         panic!("All watch receivers dropped")
                                     }
                                 }
@@ -298,6 +266,7 @@ impl TransactionService {
                         }
                     }
                 }
+                None => panic!("Schedule sender dropped"),
             }
         }
     }
@@ -397,7 +366,7 @@ impl TransactionService {
                         } else if csn.sn <= *greatest_csn {
                             // Have seen this sequence number before
                             // Check if we have a response ready
-                            let ongoing_txns = state.ongoing_txs.read().await;
+                            let ongoing_txns = state.ongoing_txs.lock().await;
                             match (&*node_state, ongoing_txns.get(&csn.cid)) {
                                 (NodeStatus::Head(_), Some(csn_map)) => {
                                     if let Some(status) = csn_map.get(&csn.sn) {

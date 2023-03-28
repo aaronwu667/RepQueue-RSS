@@ -1,6 +1,6 @@
-use super::read_utils::get_watch;
+use super::read_utils::register_future;
 use super::rpc_utils::{send_cluster_rpc, RPCRequest};
-use proto::common_decls::Csn;
+use futures::FutureExt;
 use proto::manager_net::ReadOnlyTransactRequest;
 use proto::shard_net::ExecReadRequest;
 use replication::channel_pool::ChannelPool;
@@ -8,58 +8,51 @@ use std::cmp::max;
 use std::collections::hash_map;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
+use tokio::sync::oneshot;
 
 use super::read_utils::get_queue_fence;
 use super::ManagerNodeState;
-use super::TransactionService;
 use super::TxnStatus;
+use super::{NotifyFutureWrap, TransactionService};
 
 // Read only transactions
 // TODO (high priority): Support client sessions
 impl TransactionService {
     pub(super) async fn proc_read(
-        register_dep_tx: mpsc::Sender<(Csn, watch::Sender<bool>)>,
         request: ReadOnlyTransactRequest,
         state: Arc<ManagerNodeState>,
         cluster_conns: Arc<ChannelPool<u32>>,
     ) {
         let csn = request.csn.unwrap();
         if let Some(write_dep) = request.write_dep {
-            let mut ongoing_txns = state.ongoing_txs.write().await;
+            let mut ongoing_txns = state.ongoing_txs.lock().await;
             let watch = match ongoing_txns.entry(csn.cid) {
                 hash_map::Entry::Occupied(mut csn_map) => {
                     let csn_map = csn_map.get_mut();
                     if let Some((max_in_prog, _)) = csn_map.last_key_value() {
                         if write_dep > *max_in_prog {
-                            get_watch(write_dep, csn_map)
+                            register_future(write_dep, csn_map)
                         } else {
-                            (None, None)
+                            None
                         }
                     } else {
-                        get_watch(write_dep, csn_map)
+                        register_future(write_dep, csn_map)
                     }
                 }
                 hash_map::Entry::Vacant(v) => {
                     let mut new_client_map = BTreeMap::new();
-                    let (sender, recv) = watch::channel(false);
-                    new_client_map.insert(csn.sn, TxnStatus::NotStarted(recv.clone()));
+                    let (sender, recv) = oneshot::channel();
+                    let fut = NotifyFutureWrap(recv).shared();
+                    new_client_map.insert(write_dep, TxnStatus::NotStarted(fut.clone(), sender));
                     v.insert(new_client_map);
-                    (Some(sender), Some(recv))
+                    Some(fut)
                 }
             };
             drop(ongoing_txns);
 
-            match watch {
-                (Some(s), Some(mut r)) => {
-                    if let Err(_) = register_dep_tx.send((csn.clone(), s)).await {
-                        panic!("Register dep receiver dropped")
-                    }
-                    if let Err(_) = r.changed().await {}
-                }
-                (None, Some(mut r)) => if let Err(_) = r.changed().await {},
-                _ => (),
+            // wait for dependency resolution
+            if let Some(fut) = watch {
+                fut.await;
             }
         }
 

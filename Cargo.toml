@@ -3,5 +3,6 @@
 members = [
 "replication",
 "proto",
-"txn-management"
+"txn_management",
+"client_library"
 ]

@@ -1,5 +1,6 @@
 use crate::NodeStatus;
 use async_trait::async_trait;
+use futures::{ready, Future, future};
 use proto::common_decls::{Csn, TxnRes};
 use proto::{
     common_decls::{Empty, ExecNotifRequest},
@@ -9,23 +10,39 @@ use proto::{
     },
 };
 use replication::channel_pool::ChannelPool;
+use std::pin::Pin;
+use std::task::Poll;
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     sync::Arc,
 };
-use tokio::sync::{mpsc, Mutex, RwLock, watch};
+use tokio::sync::{mpsc, oneshot, RwLock, Mutex};
 use tonic::{Request, Response, Status};
 
 mod read_transaction;
 mod read_utils;
 mod rpc_utils;
-mod write_utils;
-mod write_transaction;
 mod sharding;
+mod write_transaction;
+mod write_utils;
+
+type NotifyFuture<T> = future::Shared<NotifyFutureWrap<T>>;
+
+struct NotifyFutureWrap<T>(oneshot::Receiver<T>);
+
+impl<T> Future for NotifyFutureWrap<T> {
+    type Output = T;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        Poll::Ready(ready!(Pin::new(&mut self.0).poll(cx)).unwrap())
+    }
+}
 
 enum TxnStatus {
-    // TODO(BUG): Change this to watch
-    NotStarted(watch::Receiver<bool>),
+    NotStarted(NotifyFuture<bool>, oneshot::Sender<bool>),
     InProg(TransactionEntry),
     Done(TransactionEntry),
 }
@@ -46,7 +63,7 @@ impl TransactionEntry {
 }
 
 struct ManagerNodeState {
-    ongoing_txs: RwLock<HashMap<u64, BTreeMap<u64, TxnStatus>>>, // cid |-> (csn, statuses)
+    ongoing_txs: Mutex<HashMap<u64, BTreeMap<u64, TxnStatus>>>, // cid |-> (csn, statuses)
     txn_queues: RwLock<HashMap<u32, (u64, VecDeque<u64>)>>, // shard group id |-> (lastExec, queue), !!! transactions should start with csn 1 NOT 0 !!!
     ind_to_sh: Mutex<HashMap<u64, (Csn, HashSet<u32>)>>,    // log ind |-> (csn, shards)
     ssn_map: Mutex<HashMap<u32, u64>>, // !!! default value for SSN map should be 1 NOT 0, initialized by client !!!
@@ -60,7 +77,7 @@ impl ManagerNodeState {
         for i in 0..num_shards {
             ssn_map.insert(i, 1);
         }
-        let ongoing_txs = RwLock::new(HashMap::new());
+        let ongoing_txs = Mutex::new(HashMap::new());
         let txn_queues = RwLock::new(HashMap::new());
         let ind_to_sh = Mutex::new(HashMap::new());
         let ssn_map = Mutex::new(ssn_map);
@@ -85,7 +102,6 @@ pub struct TransactionService {
     new_req_tx: mpsc::Sender<AppendTransactRequest>,
     exec_notif_tx: Option<mpsc::Sender<ExecNotifRequest>>,
     exec_append_tx: Option<mpsc::Sender<ExecAppendTransactRequest>>,
-    register_dep_tx: mpsc::Sender<(Csn, watch::Sender<bool>)>
 }
 
 impl TransactionService {
@@ -97,7 +113,6 @@ impl TransactionService {
         let state = Arc::new(ManagerNodeState::new(num_shards));
         let (new_req_tx, new_req_rx) = mpsc::channel(5000);
         let (schd_tx, schd_rx) = mpsc::channel(5000);
-        let (register_dep_tx, register_dep_rx) = mpsc::channel(1000);
         let mut exec_notif_tx = None; // RPC handler -> exec notif servicer sender
         let mut exec_append_tx = None;
         match &*node_status {
@@ -134,7 +149,6 @@ impl TransactionService {
         ));
         tokio::spawn(Self::proc_append(
             schd_rx,
-            register_dep_rx,
             state.clone(),
             node_status,
             cluster_conns.clone(),
@@ -145,7 +159,6 @@ impl TransactionService {
             new_req_tx,
             exec_notif_tx,
             exec_append_tx,
-            register_dep_tx
         }
     }
 }
@@ -203,7 +216,6 @@ impl ManagerService for TransactionService {
         request: Request<ReadOnlyTransactRequest>,
     ) -> Result<Response<Empty>, Status> {
         tokio::spawn(Self::proc_read(
-            self.register_dep_tx.clone(),
             request.into_inner(),
             self.state.clone(),
             self.cluster_conns.clone(),

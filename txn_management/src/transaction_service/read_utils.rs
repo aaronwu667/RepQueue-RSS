@@ -1,10 +1,11 @@
-use super::{ManagerNodeState, TxnStatus};
 use super::sharding::get_buckets;
+use super::{ManagerNodeState, NotifyFuture, NotifyFutureWrap, TxnStatus};
 use fasthash::xx;
-use tokio::sync::watch;
-use std::collections::{BTreeMap, btree_map};
+use futures::FutureExt;
+use std::collections::{btree_map, BTreeMap};
 use std::ops::Bound::*;
 use std::{cmp::max, collections::HashMap};
+use tokio::sync::oneshot;
 
 // returns read fence and subtransactions
 pub(super) async fn get_queue_fence(
@@ -34,22 +35,25 @@ pub(super) async fn get_queue_fence(
     return (fence, res);
 }
 
-pub(super) fn get_watch(
+
+// If already a future, return, else create new one and add handle to map
+pub(super) fn register_future(
     write_dep: u64,
-    csn_map: &mut BTreeMap<u64, TxnStatus>
-) -> (Option<watch::Sender<bool>>, Option<watch::Receiver<bool>>) {
+    csn_map: &mut BTreeMap<u64, TxnStatus>,
+) -> Option<NotifyFuture<bool>> {
     match csn_map.entry(write_dep) {
         btree_map::Entry::Occupied(txn_ent) => {
-            if let TxnStatus::NotStarted(watch) = &txn_ent.get() {
-                (None, Some(watch.clone()))
+            if let TxnStatus::NotStarted(fut, _) = &txn_ent.get() {
+                Some(fut.clone())
             } else {
-                (None, None)
+                None
             }
         }
         btree_map::Entry::Vacant(v_txn) => {
-            let (sender, recv) = watch::channel(false);                            
-            v_txn.insert(TxnStatus::NotStarted(recv.clone()));
-            (Some(sender), Some(recv))
+            let (sender, recv) = oneshot::channel::<bool>();
+            let fut = NotifyFutureWrap(recv).shared();
+            v_txn.insert(TxnStatus::NotStarted(fut.clone(), sender));
+            Some(fut)
         }
     }
 }
