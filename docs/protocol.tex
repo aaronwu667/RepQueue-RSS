@@ -208,7 +208,7 @@ Note the variables $cwsn_T$ and $ackBound$. The first of these two guarantees ex
     \uIf{$|ReadResult_{cid}| > 1$}{$UB_{cid} := UB_{cid} \cup \{crsn_T\mapsto \text{null} \}$}
   } \Else {
     $isRetry := True$ \\
-    \tcp{Check existence of upper bound} 
+    \tcp{Check existence of upper bound, TODO: fix to retry all intervening reads that have not finished} 
     $\text{ubKey} := \min\{ x \in UB_{cid}^{\text{key}} : crsn_T\leq x \wedge UB_{cid}[x] \neq \text{null}\}$ \\
     \uIf{\upshape$\text{ubKey}\neq \text{null}$}{
       $lsnConst := UB_{cid}[\text{ubKey}]$ 
@@ -224,7 +224,7 @@ The utility of $crsn_T$ is the same as in write-only transactions. For every rea
   \caption{SessionRespRead($data$, $crsn_T$, $fence$, $numShards$)}
   \tcp{SessionRespRead on client $cid$}
   $(\text{currNum}, \text{currData}, \text{currLsn}) := ReadResult_{cid}[crsn_T]$ \\
-  \uIf{\upshape $\text{currLsn} = -1 \lor \text{currLsn} = fence$}{
+
     \uIf{\upshape$ \text{currNum} = -1$}{
       $\text{currNum} := numShards$
     } 
@@ -243,7 +243,7 @@ The utility of $crsn_T$ is the same as in write-only transactions. For every rea
     } \Else{
       $ReadResult_{cid}[crsn_T] := (\text{currNum}, \text{currData}, \text{currLsn})$
     }
-  }
+
 \end{procedure}
 \par For retries, the client session must also explicitly provide an upper bound on freshness, $lsnConst$, to the transaction manager node. Otherwise, a retry could return information newer than that of later reads, with respect to invocation order. Consider the set of completed read-only transactions with CRSN greater than $crsn_T$. We take $lsnConst$ as the log sequence number contained in the response to the minimal element of this set. That is, $lsnConst$ can be thought of as the \underline{least} upper bound on freshness. In practice, we do not track all completed read-only transactions. The set $UB_{cid}$ only contains least upper bounds, which corresponds to transactions whose immediate predecessors have not yet received a response (lines 9-12 of SessionRespRead). 
 \par Once a read is retried, responses matching the original invocation must be discarded. Again, this is needed to prevent more recent invocations from matching with a response containing data more stale than older invocations. Observe that this scheme can potentially lead to a large amount of unneccesary, cascading retries. For example, responses for a large set of read transactions may arrive just after all retries are sent out, thereby invalidating their content. However, we expect that manifestation of these behaviors is highly unlikely, assuming a resonable timeout value. 
@@ -252,7 +252,7 @@ The utility of $crsn_T$ is the same as in write-only transactions. For every rea
   \caption{ReadOnlyTransact($T$, $isRetry$, $crsn_T$, $writeDep$, $lsnConst$)}
   \SetKwFor{Match}{match}{with:}{end}
   \tcp{ReadOnlyTransact on manager node $i\in[1,n]$}
-  \uIf{$ writeDep \geq\max(W_i^{\text{key}}|cid).num$}{
+  \uIf{$ writeDep > \max(W_i^{\text{key}}|cid).num$}{
     \textbf{wait} until $writeDep \in W_i^{\text{key}}$ or $\text{ABORT}(writeDep) $ 
   }
   $fence := -1$\\

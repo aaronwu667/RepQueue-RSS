@@ -24,8 +24,8 @@ message ExecAppendTransactRequest {
 
 message ReadOnlyTransactRequest {
   repeated string keys = 1;
-  bool isRetry = 2;
   common_decls.Csn csn = 3;
-  repeated string writeDeps = 4;
-  uint64 lsnConst = 5;
+  optional uint64 writeDep = 4;
+  optional uint64 lsnConst = 5;
+  string addr = 6;
 }
