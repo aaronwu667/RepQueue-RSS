@@ -34,6 +34,7 @@ impl Connection {
         match &*status {
             ConnectionStatus::NotInit(endpt) => match endpt.connect().await {
                 Ok(ch) => {
+                    println!("Connection succeeded {}", endpt.uri());
                     *status = ConnectionStatus::Init(ch);
                     Ok(())
                 }
@@ -44,6 +45,7 @@ impl Connection {
     }
 }
 
+// TODO (low priority): Either add a single variant or refactor this
 pub enum NodeStatus {
     Head(Arc<Connection>),
     Tail(Arc<Connection>),

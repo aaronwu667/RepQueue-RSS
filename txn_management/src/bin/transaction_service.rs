@@ -29,7 +29,7 @@ async fn main() {
         _ => panic!("Unknown node type"),
     };
     let num_shards = u32::try_from(args.len()).unwrap();
-    let conn_pool = ChannelPool::new(args);
+    let conn_pool = ChannelPool::new(None, args);
     let cluster_manager = ClusterManager::new(node_status, my_cluster_addr, num_shards, conn_pool);
     let cluster_manager_service = ClusterManagementServiceServer::new(cluster_manager);
     if let Err(_) = Server::builder()

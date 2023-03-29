@@ -1,4 +1,4 @@
-use std::{sync::Arc, collections::BTreeSet};
+use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
 use openraft::{Config, Raft};
@@ -30,6 +30,7 @@ impl ClusterManager {
         my_cluster_addr: std::net::SocketAddr,
         conn_pool: ChannelPool<u64>,
     ) -> Self {
+        tracing_subscriber::fmt::init();
         let conn_pool = Arc::new(conn_pool);
 
         // init raft
@@ -55,6 +56,7 @@ impl ClusterManager {
                     sh_exec_watch,
                 ));
                 // as per docs, will panic if binding to addr fails
+                println!("Shard and raft servers running on {}", my_cluster_addr);
                 if let Err(_) = Server::builder()
                     .add_service(shard_server)
                     .add_service(raft_server)
@@ -85,24 +87,26 @@ impl ClusterManagementService for ClusterManager {
 
     async fn start_cluster(&self, _: Request<Empty>) -> Result<Response<Empty>, Status> {
         if self.node_id == 1 {
-            let nids : BTreeSet<u64> = self.conn_pool.get_all_nodes().await;
+            let mut nids: BTreeSet<u64> = self.conn_pool.get_all_nodes().await;
+            nids.remove(&0);
+            nids.insert(1);
             match self.raft.change_membership(nids, true).await {
-                Ok(_) => return Ok(Response::new(Empty {  })),
-                Err(_) => return Err(Status::internal("Cluster init error"))
+                Ok(_) => return Ok(Response::new(Empty {})),
+                Err(_) => return Err(Status::internal("Cluster init error")),
             }
         } else {
-            return Err(Status::invalid_argument("Node is not leader"))
+            return Err(Status::invalid_argument("Node is not leader"));
         }
     }
 
     async fn add_member(&self, req: Request<NodeId>) -> Result<Response<Empty>, Status> {
         if self.node_id == 1 {
             match self.raft.add_learner(req.into_inner().id, true).await {
-                Ok(_) => return Ok(Response::new(Empty {  })),
-                Err(_) => return Err(Status::internal("Learner addition error"))
+                Ok(_) => return Ok(Response::new(Empty {})),
+                Err(_) => return Err(Status::internal("Learner addition error")),
             }
         } else {
-            return Err(Status::invalid_argument("Node is not leader"))
+            return Err(Status::invalid_argument("Node is not leader"));
         }
     }
 
@@ -110,10 +114,16 @@ impl ClusterManagementService for ClusterManager {
         if self.node_id == 1 {
             match self.raft.initialize(BTreeSet::from([1])).await {
                 Ok(_) => return Ok(Response::new(Empty {})),
-                Err(_) => return Err(Status::internal("Initialization error"))
+                Err(_) => return Err(Status::internal("Initialization error")),
             }
         } else {
-            return Err(Status::invalid_argument("Node is not leader"))
+            return Err(Status::invalid_argument("Node is not leader"));
         }
+    }
+
+    async fn get_metrics(&self, _: Request<Empty>) -> Result<Response<Empty>, Status> {
+        let metrics = self.raft.metrics().borrow().clone();
+        println!("{:?}", metrics);
+        Ok(Response::new(Empty {}))
     }
 }

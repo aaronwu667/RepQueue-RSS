@@ -8,6 +8,7 @@ service ClusterManagementService {
   /// Do not support changes in leadership
   rpc AddMember(NodeId) returns (common_decls.Empty);
   rpc InitLeader(common_decls.Empty) returns (common_decls.Empty);
+  rpc GetMetrics(common_decls.Empty) returns (common_decls.Empty);
 }
 
 message NodeId {

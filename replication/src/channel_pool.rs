@@ -24,9 +24,15 @@ where
         + std::cmp::Ord,
     T::Error: std::fmt::Debug,
 {
-    pub fn new(addrs: Vec<String>) -> Self {
+    pub fn new(my_node_id: Option<u64>, addrs: Vec<String>) -> Self {
         let mut new_map = HashMap::new();
+        let my_node_id = my_node_id.map(|num| usize::try_from(num).unwrap());
         for (i, addr) in addrs.into_iter().enumerate() {
+            if let Some(nid) = my_node_id {
+                if nid == i {
+                    continue;
+                }
+            } 
             new_map.insert(
                 T::try_from(i).unwrap(),
                 ChanStatus::NotInit(Endpoint::from_shared(addr).unwrap()),
@@ -40,17 +46,19 @@ where
     // just use static conf for convenience
     pub async fn connect(&self) -> Result<(), String> {
         let mut channels = self.channels.write().await;
-        for (i, addr) in channels.values_mut().enumerate() {
+        for (i, addr) in channels.iter_mut() {
             match addr {
                 ChanStatus::NotInit(endpt) => match endpt.connect().await {
                     Ok(connection) => {
+                        println!("Connection succeeded node {} with uri {}", i, endpt.uri());
                         *addr = ChanStatus::Init(connection);
                     }
-                    _ => {
+                    Err(e) => {
                         return Err(format!(
-                            "Connection to node {} failed with addr {}",
+                            "Connection to node {} failed with addr {}, {}",
                             i,
-                            endpt.uri()
+                            endpt.uri(),
+                            e.to_string()
                         ))
                     }
                 },

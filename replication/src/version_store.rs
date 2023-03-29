@@ -62,7 +62,7 @@ impl VersionStoreState {
 
 // log related state
 pub struct VersionStoreLog {
-    log: BTreeMap<u64, Entry<StoreRequest>>, // This feels obtuse to me
+    log: BTreeMap<u64, Entry<StoreRequest>>,
     last_purged: Option<LogId>,
 }
 
@@ -217,8 +217,11 @@ impl RaftStorage<StoreRequest, StoreResponse> for MemStore {
         let mut res = Vec::with_capacity(entries.len());
         let mut state = self.state.write().await;
         for ent in entries {
+            state.last_applied = Some(ent.log_id);
             match &ent.payload {
-                Blank => (),
+                Blank => {
+                    res.push(StoreResponse { res: None });
+                }
                 Normal(req) => {
                     if req.ssn > state.ssn {
                         let ind = req.ind;
@@ -262,10 +265,10 @@ impl RaftStorage<StoreRequest, StoreResponse> for MemStore {
                     state.last_membership = Some(EffectiveMembership {
                         log_id: ent.log_id,
                         membership: mem.clone(),
-                    })
+                    });
+                    res.push(StoreResponse { res: None });
                 }
-            }
-            state.last_applied = Some(ent.log_id);
+            }            
         }
         return Ok(res);
     }

@@ -15,7 +15,7 @@ async fn main() {
     assert!(node_id != TAIL_NID, "tail id must be 0");
     let my_config_addr = args.pop().unwrap().parse().unwrap();
     let my_cluster_addr = args.pop().unwrap().parse().unwrap();
-    let conn_pool = ChannelPool::new(args);
+    let conn_pool = ChannelPool::new(Some(node_id), args);
 
     let cluster_manager = ClusterManagementServiceServer::new(ClusterManager::new(
         shard_id,

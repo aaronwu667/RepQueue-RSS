@@ -309,3 +309,4 @@ TSWLatexianTemp*
 # Added by cargo
 /debug
 /target
+*.lock

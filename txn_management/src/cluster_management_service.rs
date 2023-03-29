@@ -79,4 +79,7 @@ impl ClusterManagementService for ClusterManager {
     async fn init_leader(&self, _: Request<Empty>) -> Result<Response<Empty>, Status> {
         return Ok(Response::new(Empty {}));
     }
+    async fn get_metrics(&self, _:Request<Empty>) -> Result<Response<Empty>, Status> {
+        return Ok(Response::new(Empty {}));
+    }
 }

@@ -39,7 +39,7 @@ impl RaftNetwork<StoreRequest> for BaseNetwork {
         let resp = client.append_entries(rpc).await?.into_inner();
         let resp = AppendEntriesResponse {
             term: resp.term,
-            success: resp.conflict,
+            success: resp.success,
             conflict: resp.conflict,
         };
         Ok(resp)
