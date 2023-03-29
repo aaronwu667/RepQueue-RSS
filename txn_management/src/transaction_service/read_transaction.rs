@@ -23,7 +23,7 @@ impl TransactionService {
         state: Arc<ManagerNodeState>,
         cluster_conns: Arc<ChannelPool<u32>>,
     ) {
-        let csn = request.csn.unwrap();
+        let csn = request.csn.expect("Csn should not be empty");
         if let Some(write_dep) = request.write_dep {
             let mut ongoing_txns = state.ongoing_txs.lock().await;
             let watch = match ongoing_txns.entry(csn.cid) {

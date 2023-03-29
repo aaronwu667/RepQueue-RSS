@@ -5,8 +5,8 @@ use std::collections::hash_map::Entry::*;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Bound::*;
 
-use super::ManagerNodeState;
 use super::sharding::get_buckets;
+use super::ManagerNodeState;
 
 // utils for transaction service
 pub(super) async fn update_view(
@@ -39,7 +39,7 @@ pub(super) async fn update_view(
                 .or_insert((0, VecDeque::from([ind])));
 
             // increment shard sequence number
-            let ssn = ssn_map.get_mut(&ub.sid).unwrap();
+            let ssn = ssn_map.get_mut(&ub.sid).expect("SSN entry for shard should be present at initialization");
             *ssn += 1;
 
             // update ind to shard mapping
@@ -75,10 +75,9 @@ pub(super) async fn update_view_tail(
     for (k, v) in write_set.into_iter() {
         let hash = xx::hash64(k.as_bytes());
         let mut after = buckets.range_mut((Excluded(hash), Unbounded));
-        let (_, ub) = match after.next() {
-            Some(ub) => ub,
-            None => panic!("Greatest element of tree should be u64 MAX"),
-        };
+        let (_, ub) = after
+            .next()
+            .expect("Greatest element of tree should be u64 MAX");
         if !ub.visited {
             // insert into transaction queue
             txn_queues
@@ -89,7 +88,7 @@ pub(super) async fn update_view_tail(
                 .or_insert((0, VecDeque::from([ind])));
 
             // increment shard sequence number
-            let ssn = ssn_map.get_mut(&ub.sid).unwrap();
+            let ssn = ssn_map.get_mut(&ub.sid).expect("SSN entry for shard should be present at initialization");
             *ssn += 1;
 
             // update ind to shard mapping

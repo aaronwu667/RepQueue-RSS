@@ -143,7 +143,7 @@ impl ShardServer {
             // TODO (low priority): Support conditional evaluation
             match ch.await {
                 Ok(_) => (),
-                Err(_) => panic!("Dep resolver dropped the channel"),
+                Err(_) => eprintln!("Timeout, Dep resolver dropped the channel"),
             }
         }
 
@@ -218,12 +218,7 @@ impl ShardServer {
             let mut new_req: Option<WriteQueueEntry> = None;
             tokio::select! {
                 _ = ssn_watch.changed() => {curr_ssn = *ssn_watch.borrow()},
-                r = req_ch.recv() => {
-                    match r {
-                        Some(_) => {new_req = r},
-                        None => panic!("Enqueue channel closed")
-                    }
-                }
+                r = req_ch.recv() => { new_req = Some(r.expect("Enqueue channel closed"));}
             };
 
             if let Some(ent) = new_req {
@@ -238,12 +233,10 @@ impl ShardServer {
                 }
             } else {
                 // see if anything on the queue can be processed
-                let head = match write_queue.keys().next() {
-                    Some(inner) => *inner,
-                    None => {
-                        panic!("Servicer notified, but nothing on queue");
-                    }
-                };
+                let head = *write_queue
+                    .keys()
+                    .next()
+                    .expect("Servicer notified, but nothing on queue");
                 if head == curr_ssn + 1 {
                     // remove from queue and launch executor
                     let ent = write_queue.remove(&head).unwrap();
@@ -279,46 +272,56 @@ impl ShardServer {
         loop {
             tokio::select! {
                 resolve = resolv_dep_ch.recv() => {
-                    match resolve {
-                        Some(r) => {
-                            // Could do a consistency check here on new vs old num_deps
-                            metadata.insert(r.ind, Some(DepInfo{num_deps: r.num_deps, ch: r.ch}));
-                        },
-                        None => panic!("Resolve channel closed")
+                    let resolve = resolve.expect("Resolve channel closed");
+                    // Could do a consistency check here on new vs old num_deps
+                    match dep_buf.get(&resolve.ind) {
+                        Some(buf_res) => {
+                            if u32::try_from(buf_res.len()).unwrap() == resolve.num_deps {
+                                if let Err(_) = resolve.ch.send(buf_res.clone()) {
+                                    eprintln!("Error while sending dependencies")
+                                }
+                            } else {
+                                metadata.insert(resolve.ind, Some(DepInfo{num_deps: resolve.num_deps, ch: resolve.ch}));
+                            }
+                        }
+                        None => {metadata.insert(resolve.ind, Some(DepInfo{num_deps: resolve.num_deps, ch: resolve.ch}));}
                     }
                 },
                 new_dep = recv_dep_ch.recv() => {
-                    match new_dep {
-                        Some(d) => {
-                            match dep_buf.entry(d.ind) {
-                                Occupied(mut o) => {
-                                    let map = o.get_mut();
-                                    for (k, v) in d.res.into_iter() {
-                                        map.insert(k, v);
+                    let new_dep = new_dep.expect("New dependency channel closed");
+                    match dep_buf.entry(new_dep.ind) {
+                        Occupied(mut o) => {
+                            let map = o.get_mut();
+                            for (k, v) in new_dep.res.into_iter() {
+                                map.insert(k, v);
+                            }
+
+                            // send if we have gathered all dependencies
+                            if let Some(Some(meta)) = metadata.get(&new_dep.ind) {
+                                if meta.num_deps == u32::try_from(map.len()).unwrap() {
+                                    let dep_info = metadata.remove(&new_dep.ind).flatten().unwrap();
+                                    if let Err(_) = dep_info.ch.send(map.clone()) {
+                                        eprintln!("Error while sending dependencies")
                                     }
-                                },
-                                Vacant(v) => {
-                                    let mut map = HashMap::new();
-                                    for (k, v) in d.res.into_iter() {
-                                        map.insert(k, v);
-                                    }
-                                    v.insert(map);
                                 }
                             }
                         },
-                        None => panic!("New depedency channel closed")
-                    }
-                }
-            }
+                        Vacant(v) => {
+                            let mut map = HashMap::new();
+                            for (k, v) in new_dep.res.into_iter() {
+                                map.insert(k, v);
+                            }
 
-            // check if we can notify anyone
-            for (ind, dep_vals) in dep_buf.iter() {
-                if let Some(Some(meta)) = metadata.get(ind) {
-                    // WARNING: undefined behavior for more than u32 dependencies
-                    if meta.num_deps == u32::try_from(dep_vals.len()).unwrap() {
-                        let dep_info = metadata.remove(ind).flatten().unwrap();
-                        if let Err(_) = dep_info.ch.send(dep_vals.to_owned()) {
-                            eprintln!("Error while sending dependencies")
+                            // send if we have gathered all dependencies
+                            if let Some(Some(meta)) = metadata.get(&new_dep.ind) {
+                                if meta.num_deps == u32::try_from(map.len()).unwrap() {
+                                    let dep_info = metadata.remove(&new_dep.ind).flatten().unwrap();
+                                    if let Err(_) = dep_info.ch.send(map.clone()) {
+                                        eprintln!("Error while sending dependencies")
+                                    }
+                                }
+                            }
+                            v.insert(map);
                         }
                     }
                 }
@@ -363,15 +366,11 @@ impl ShardServer {
                     }
                 },
                 new_req = req_ch.recv() => {
-                    match new_req {
-                        Some(r) => {
-                            if r.fence <= curr_sh_exec {
-                                Self::serve_read(r, store.clone()).await;
-                            } else {
-                                read_queue.insert(r.fence, r);
-                            }
-                        },
-                        None => panic!("Enqueue read requests channel closed")
+                    let new_req = new_req.expect("Enqueue read requests channel closed");
+                    if new_req.fence <= curr_sh_exec {
+                        Self::serve_read(new_req, store.clone()).await;
+                    } else {
+                        read_queue.insert(new_req.fence, new_req);
                     }
                 }
             }
@@ -424,7 +423,7 @@ impl ShardService for ShardServer {
             if res.map.len() > 0 {
                 res_opt = Some(res);
             }
-            
+
             return Ok(Response::new(ExecNotifRequest {
                 req_status: Some(ReqStatus::Response(ExecNotifInner {
                     res: res_opt,
@@ -462,8 +461,8 @@ impl ShardService for ShardServer {
                 panic!("enqueue_reqs receiver dropped");
             }
 
-            return Ok(Response::new( ExecNotifRequest {
-                req_status: Some(ReqStatus::Promise(true))
+            return Ok(Response::new(ExecNotifRequest {
+                req_status: Some(ReqStatus::Promise(true)),
             }));
         }
     }

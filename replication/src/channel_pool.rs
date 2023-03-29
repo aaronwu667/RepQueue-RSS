@@ -62,10 +62,7 @@ where
 
     pub async fn get_client<V>(&self, f: fn(Channel) -> V, node: T) -> V {
         let channels = self.channels.read().await;
-        let ent = match channels.get(&node) {
-            Some(status) => status,
-            None => panic!("No channel associated with node {}", node),
-        };
+        let ent = channels.get(&node).unwrap_or_else(|| panic!("No channel associated with node {}", node));
         match ent {
             ChanStatus::Init(chan) => return f(chan.clone()),
             ChanStatus::NotInit(_) => {

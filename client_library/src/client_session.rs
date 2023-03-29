@@ -188,7 +188,7 @@ impl ClientLibrary for ClientSession {
     ) -> Result<Response<Empty>, Status> {
         // first get the result corresponding to sequence num
         let req = request.into_inner();
-        let Csn { cid: _, sn } = req.csn.unwrap();
+        let Csn { cid: _, sn } = req.csn.expect("Csn should not be empty");
         let read_results = self.read_results.read().await;
         let partial_res_guard = match read_results.get(&sn) {
             Some(mutex) => mutex.clone(),
@@ -241,7 +241,7 @@ impl ClientLibrary for ClientSession {
         request: Request<SessionRespWriteRequest>,
     ) -> Result<Response<Empty>, Status> {
         let req = request.into_inner();
-        let Csn { cid: _, sn } = req.csn.unwrap();
+        let Csn { cid: _, sn } = req.csn.expect("Csn should not be empty");
         let mut rw_in_prog = self.rw_in_prog.write().await;
         rw_in_prog.remove(&sn);
         drop(rw_in_prog);

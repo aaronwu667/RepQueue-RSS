@@ -32,65 +32,60 @@ impl TransactionService {
         pred: Option<Arc<Connection>>,
     ) {
         loop {
-            if let Some(req) = exec_append_ch.recv().await {
-                // update queues
-                let mut ind_to_sh = state.ind_to_sh.lock().await;
-                let (csn, shards) = match ind_to_sh.remove(&req.ind) {
-                    Some(ent) => ent,
-                    None => panic!("No entry associated with log index"),
-                };
-                drop(ind_to_sh);
+            let req = exec_append_ch
+                .recv()
+                .await
+                .expect("Exec append channel closed");
+            // update queues
+            let mut ind_to_sh = state.ind_to_sh.lock().await;
+            let (csn, shards) = ind_to_sh
+                .remove(&req.ind)
+                .expect("No entry associated with log index");
+            drop(ind_to_sh);
 
-                let mut txn_queues = state.txn_queues.write().await;
-                for sh in shards {
-                    let (last_exec, queue) = match txn_queues.get_mut(&sh) {
-                        Some(ent) => ent,
-                        None => panic!("No queue associated with shard group"),
-                    };
-                    while req.ind > *last_exec {
-                        *last_exec = queue.pop_front().unwrap();
-                    }
+            let mut txn_queues = state.txn_queues.write().await;
+            for sh in shards {
+                let (last_exec, queue) = txn_queues
+                    .get_mut(&sh)
+                    .expect("No queue associated with shard group");
+                while req.ind > *last_exec {
+                    *last_exec = queue.pop_front().expect("Index should be in queue");
                 }
-                drop(txn_queues);
+            }
+            drop(txn_queues);
 
-                // update ongoing transactions
-                let mut ongoing_txns = state.ongoing_txs.lock().await;
-                let transaction = match ongoing_txns
-                    .get_mut(&csn.cid)
-                    .and_then(|csn_map| csn_map.get_mut(&csn.sn))
-                {
-                    Some(s) => s,
-                    None => panic!("Missing appropriate entries in ongoing transactions"),
-                };
+            // update ongoing transactions
+            let mut ongoing_txns = state.ongoing_txs.lock().await;
+            let transaction = ongoing_txns
+                .get_mut(&csn.cid)
+                .and_then(|csn_map| csn_map.get_mut(&csn.sn))
+                .expect("Missing appropriate entries in ongoing transactions");
 
-                let addr = match transaction {
-                    TxnStatus::InProg(e) => {
-                        let copy_addr = e.addr.to_owned();
-                        *transaction = TxnStatus::Done(TransactionEntry::new_res(
-                            req.res.clone(),
-                            copy_addr.clone(),
-                        ));
-                        copy_addr
-                    }
-                    TxnStatus::Done(e) => e.addr.to_owned(),
-                    _ => {
-                        panic!("Finished transaction marked as not started")
-                    }
-                };
-                drop(ongoing_txns);
-
-                // send result to client if head, otherwise continue backwards ack
-                if let Some(ref ch) = pred {
-                    send_chain_rpc(RPCRequest::ExecAppendTransact(req), ch.clone()).await;
-                } else {
-                    let resp = SessionRespWriteRequest {
-                        res: req.res,
-                        csn: Some(csn),
-                    };
-                    send_client_rpc(RPCRequest::SessResponseWrite(resp), addr).await;
+            let addr = match transaction {
+                TxnStatus::InProg(e) => {
+                    let copy_addr = e.addr.to_owned();
+                    *transaction = TxnStatus::Done(TransactionEntry::new_res(
+                        req.res.clone(),
+                        copy_addr.clone(),
+                    ));
+                    copy_addr
                 }
+                TxnStatus::Done(e) => e.addr.to_owned(),
+                _ => {
+                    panic!("Finished transaction marked as not started")
+                }
+            };
+            drop(ongoing_txns);
+
+            // send result to client if head, otherwise continue backwards ack
+            if let Some(ref ch) = pred {
+                send_chain_rpc(RPCRequest::ExecAppendTransact(req), ch.clone()).await;
             } else {
-                panic!("Exec append channel closed");
+                let resp = SessionRespWriteRequest {
+                    res: req.res,
+                    csn: Some(csn),
+                };
+                send_client_rpc(RPCRequest::SessResponseWrite(resp), addr).await;
             }
         }
     }
@@ -102,97 +97,95 @@ impl TransactionService {
         pred: Arc<Connection>,
     ) {
         loop {
-            if let Some(partial_res) = exec_ch.recv().await {
-                // update queues
-                let partial_res = match partial_res.req_status.unwrap() {
-                    ReqStatus::Response(r) => r,
-                    _ => panic!("Wrong type of message for execnotif"),
-                };
-                let mut txn_queues = state.txn_queues.write().await;
-                match txn_queues.get_mut(&partial_res.shard_id) {
-                    Some(queue) => {
-                        while partial_res.ind > queue.0 {
-                            queue.0 = queue.1.pop_front().unwrap();
-                        }
+            let partial_res = exec_ch
+                .recv()
+                .await
+                .expect("ExecNotif channel sender closed");
+            // update queues
+            let partial_res = match partial_res.req_status.expect("Should have a status") {
+                ReqStatus::Response(r) => r,
+                _ => panic!("Wrong type of message for execnotif"),
+            };
+            let mut txn_queues = state.txn_queues.write().await;
+            match txn_queues.get_mut(&partial_res.shard_id) {
+                Some(queue) => {
+                    while partial_res.ind > queue.0 {
+                        queue.0 = queue.1.pop_front().expect("Queue should not be empty");
                     }
-                    None => panic!("Missing entry in txn_queues map"),
                 }
-                drop(txn_queues);
-
-                // update ind to shard map and get cwsn
-                let mut done = false;
-                let mut ind_to_sh = state.ind_to_sh.lock().await;
-                let (cid, csn_num) = match ind_to_sh.get_mut(&partial_res.ind) {
-                    Some(e) => {
-                        e.1.remove(&partial_res.shard_id);
-                        if e.1.len() == 0 {
-                            done = true;
-                        }
-                        (e.0.cid, e.0.sn)
-                    }
-                    None => panic!("Missing entry in ind-to-shard map"),
-                };
-                if done {
-                    ind_to_sh.remove(&partial_res.ind);
-                }
-                drop(ind_to_sh);
-
-                // update ongoing txn map
-                let mut ongoing_txns = state.ongoing_txs.lock().await;
-                let transaction = match ongoing_txns
-                    .get_mut(&cid)
-                    .and_then(|csn_map| csn_map.get_mut(&csn_num))
-                {
-                    Some(s) => s,
-                    None => panic!("Missing appropriate entries in ongoing transactions"),
-                };
-                // view consistency check
-                let transact_ent = match transaction {
-                    TxnStatus::InProg(e) => e,
-                    TxnStatus::Done(e) => {
-                        if !done {
-                            panic!("Transaction marked as done, but responses not recieved from all shards")
-                        }
-                        e
-                    }
-                    TxnStatus::NotStarted(_, _) => {
-                        panic!("Transaction marked as not started is being executed")
-                    }
-                };
-                // merge results into existing
-                match (partial_res.res, transact_ent.result.as_mut()) {
-                    (Some(res), Some(resp_data)) => {
-                        for (k, v) in res.map {
-                            resp_data.map.insert(k, v);
-                        }
-                    }
-                    (Some(res), None) => {
-                        let map = HashMap::from(res.map);
-                        (*transact_ent).result = Some(TxnRes { map });
-                    }
-                    (None, None) | (None, Some(_)) => (),
-                };
-
-                // backwards ack through chain if done
-                if done {
-                    let res = transact_ent.result.clone();
-                    *transaction = TxnStatus::Done(TransactionEntry::new_res(
-                        res.clone(),
-                        transact_ent.addr.to_owned(),
-                    ));
-                    let req = ExecAppendTransactRequest {
-                        ind: partial_res.ind,
-                        res,
-                    };
-                    tokio::spawn(send_chain_rpc(
-                        RPCRequest::ExecAppendTransact(req),
-                        pred.clone(),
-                    ));
-                }
-                drop(ongoing_txns);
-            } else {
-                panic!("ExecNotif channel sender closed");
+                None => panic!("Missing entry in txn_queues map"),
             }
+            drop(txn_queues);
+
+            // update ind to shard map and get cwsn
+            let mut done = false;
+            let mut ind_to_sh = state.ind_to_sh.lock().await;
+            let (cid, csn_num) = match ind_to_sh.get_mut(&partial_res.ind) {
+                Some(e) => {
+                    e.1.remove(&partial_res.shard_id);
+                    if e.1.len() == 0 {
+                        done = true;
+                    }
+                    (e.0.cid, e.0.sn)
+                }
+                None => panic!("Missing entry in ind-to-shard map"),
+            };
+            if done {
+                ind_to_sh.remove(&partial_res.ind);
+            }
+            drop(ind_to_sh);
+
+            // update ongoing txn map
+            let mut ongoing_txns = state.ongoing_txs.lock().await;
+            let transaction = ongoing_txns
+                .get_mut(&cid)
+                .and_then(|csn_map| csn_map.get_mut(&csn_num))
+                .expect("Missing appropriate entries in ongoing transactions");
+
+            // view consistency check
+            let transact_ent = match transaction {
+                TxnStatus::InProg(e) => e,
+                TxnStatus::Done(e) => {
+                    if !done {
+                        panic!("Transaction marked as done, but responses not recieved from all shards")
+                    }
+                    e
+                }
+                TxnStatus::NotStarted(_, _) => {
+                    panic!("Transaction marked as not started is being executed")
+                }
+            };
+            // merge results into existing
+            match (partial_res.res, transact_ent.result.as_mut()) {
+                (Some(res), Some(resp_data)) => {
+                    for (k, v) in res.map {
+                        resp_data.map.insert(k, v);
+                    }
+                }
+                (Some(res), None) => {
+                    let map = HashMap::from(res.map);
+                    (*transact_ent).result = Some(TxnRes { map });
+                }
+                (None, None) | (None, Some(_)) => (),
+            };
+
+            // backwards ack through chain if done
+            if done {
+                let res = transact_ent.result.clone();
+                *transaction = TxnStatus::Done(TransactionEntry::new_res(
+                    res.clone(),
+                    transact_ent.addr.to_owned(),
+                ));
+                let req = ExecAppendTransactRequest {
+                    ind: partial_res.ind,
+                    res,
+                };
+                tokio::spawn(send_chain_rpc(
+                    RPCRequest::ExecAppendTransact(req),
+                    pred.clone(),
+                ));
+            }
+            drop(ongoing_txns);
         }
     }
 
@@ -204,69 +197,64 @@ impl TransactionService {
     ) {
         let mut log = VecDeque::<AppendTransactRequest>::new();
         loop {
-            match schd_rx.recv().await {
-                Some(released_req) => {
-                    let ind = log.len();
-                    log.push_back(released_req.clone());
-                    let csn = released_req.csn.as_ref().unwrap();
-                    let addr = released_req.addr.clone();
-                    let mut ongoing_txns = state.ongoing_txs.lock().await;
-                    match ongoing_txns.entry(csn.cid) {
-                        Occupied(mut o) => {
-                            if let Some(old_ent) = o
-                                .get_mut()
-                                .insert(csn.sn, TxnStatus::InProg(TransactionEntry::new(addr)))
-                            {
-                                if let TxnStatus::NotStarted(_, notif) = old_ent {
-                                    if let Err(_) = notif.send(true) {
-                                        panic!("All watch receivers dropped")
-                                    }
-                                }
-                            }
-                            o.get_mut().retain(|k, _| *k >= released_req.ack_bound);
-                        }
-                        Vacant(v) => {
-                            v.insert(BTreeMap::from([(
-                                csn.sn,
-                                TxnStatus::InProg(TransactionEntry::new(addr)),
-                            )]));
-                        }
-                    };
-                    drop(ongoing_txns);
-
-                    match &*node_state {
-                        NodeStatus::Head(succ) => {
-                            update_view(&state, ind, csn.clone(), &released_req.txn).await;
-                            let new_req = AppendTransactRequest {
-                                ind: u64::try_from(ind).unwrap(),
-                                ..released_req
-                            };
-                            tokio::spawn(send_chain_rpc(
-                                RPCRequest::AppendTransact(new_req),
-                                succ.clone(),
-                            ));
-                        }
-                        NodeStatus::Middle(_, succ) => {
-                            update_view(&state, ind, csn.clone(), &released_req.txn).await;
-                            tokio::spawn(send_chain_rpc(
-                                RPCRequest::AppendTransact(released_req),
-                                succ.clone(),
-                            ));
-                        }
-                        NodeStatus::Tail(_) => {
-                            let reqs =
-                                update_view_tail(&state, ind, csn.clone(), released_req.txn).await;
-                            for (k, v) in reqs.into_iter() {
-                                tokio::spawn(send_cluster_rpc(
-                                    k,
-                                    RPCRequest::ExecAppend(v),
-                                    cluster_conns.clone(),
-                                ));
+            let released_req = schd_rx.recv().await.expect("Schedule sender dropped");
+            let ind = log.len();
+            log.push_back(released_req.clone());
+            let csn = released_req.csn.as_ref().expect("Missing csn");
+            let addr = released_req.addr.clone();
+            let mut ongoing_txns = state.ongoing_txs.lock().await;
+            match ongoing_txns.entry(csn.cid) {
+                Occupied(mut o) => {
+                    if let Some(old_ent) = o
+                        .get_mut()
+                        .insert(csn.sn, TxnStatus::InProg(TransactionEntry::new(addr)))
+                    {
+                        if let TxnStatus::NotStarted(_, notif) = old_ent {
+                            if let Err(_) = notif.send(true) {
+                                panic!("All watch receivers dropped")
                             }
                         }
                     }
+                    o.get_mut().retain(|k, _| *k >= released_req.ack_bound);
                 }
-                None => panic!("Schedule sender dropped"),
+                Vacant(v) => {
+                    v.insert(BTreeMap::from([(
+                        csn.sn,
+                        TxnStatus::InProg(TransactionEntry::new(addr)),
+                    )]));
+                }
+            };
+            drop(ongoing_txns);
+
+            match &*node_state {
+                NodeStatus::Head(succ) => {
+                    update_view(&state, ind, csn.clone(), &released_req.txn).await;
+                    let new_req = AppendTransactRequest {
+                        ind: u64::try_from(ind).unwrap(),
+                        ..released_req
+                    };
+                    tokio::spawn(send_chain_rpc(
+                        RPCRequest::AppendTransact(new_req),
+                        succ.clone(),
+                    ));
+                }
+                NodeStatus::Middle(_, succ) => {
+                    update_view(&state, ind, csn.clone(), &released_req.txn).await;
+                    tokio::spawn(send_chain_rpc(
+                        RPCRequest::AppendTransact(released_req),
+                        succ.clone(),
+                    ));
+                }
+                NodeStatus::Tail(_) => {
+                    let reqs = update_view_tail(&state, ind, csn.clone(), released_req.txn).await;
+                    for (k, v) in reqs.into_iter() {
+                        tokio::spawn(send_cluster_rpc(
+                            k,
+                            RPCRequest::ExecAppend(v),
+                            cluster_conns.clone(),
+                        ));
+                    }
+                }
             }
         }
     }
@@ -281,10 +269,10 @@ impl TransactionService {
         node_state: Arc<NodeStatus>,
     ) {
         if let NodeStatus::Head(_) = *node_state {
-            schd_tx.send(req).await.unwrap();
+            schd_tx.send(req).await.expect("schd_ch receiver should not have dropped");
             *log_ind += 1;
         } else if req.ind == *log_ind {
-            schd_tx.send(req).await.unwrap();
+            schd_tx.send(req).await.expect("schd_ch receiver should not have dropped");
             *log_ind += 1;
 
             // send out continuous prefix of log queue
@@ -301,7 +289,7 @@ impl TransactionService {
 
             for ind in log_ents.into_iter() {
                 let head = log_queue.remove(&ind).unwrap();
-                schd_tx.send(head).await.unwrap();
+                schd_tx.send(head).await.expect("schd_ch receiver should not have dropped");
             }
             *log_ind = new_ind;
         } else {
@@ -323,7 +311,7 @@ impl TransactionService {
         loop {
             let new_req = new_req_rx.recv().await;
             if let Some(new_req) = new_req {
-                let csn = new_req.csn.as_ref().unwrap();
+                let csn = new_req.csn.as_ref().expect("Missing csn");
                 match client_queue.entry(csn.cid) {
                     Occupied(mut o) => {
                         let (greatest_csn, queue) = o.get_mut();
