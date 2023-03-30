@@ -118,5 +118,5 @@ pub(super) async fn update_view_tail(
             ub.visited = true;
         }
     }
-    return res;
+    res
 }

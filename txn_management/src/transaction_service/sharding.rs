@@ -20,7 +20,7 @@ pub(super) fn get_buckets(num_shards: u32) -> BTreeMap<u64, BucketEntry> {
     let mut prev = 0;
     let mut buckets = BTreeMap::<u64, BucketEntry>::new();
     for i in 1..(num_shards + 1) {
-        prev = prev + step;
+        prev += step;
         if rem > 0 {
             prev += 1;
             rem -= 1;
@@ -29,5 +29,5 @@ pub(super) fn get_buckets(num_shards: u32) -> BTreeMap<u64, BucketEntry> {
             buckets.insert(prev, BucketEntry::new(i));
         }
     }
-    return buckets;
+    buckets
 }

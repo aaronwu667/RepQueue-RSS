@@ -33,7 +33,7 @@ impl RaftNetwork<StoreRequest> for BaseNetwork {
         // get client from channel pool
         let mut client = self
             .connections
-            .get_client(|c| RaftServiceClient::new(c), target)
+            .get_client(RaftServiceClient::new, target)
             .await;
 
         let resp = client.append_entries(rpc).await?.into_inner();
@@ -51,27 +51,27 @@ impl RaftNetwork<StoreRequest> for BaseNetwork {
     ) -> Result<InstallSnapshotResponse> {
         let mut client = self
             .connections
-            .get_client(|c| RaftServiceClient::new(c), target)
+            .get_client(RaftServiceClient::new, target)
             .await;
 
         let resp = client.install_snapshot(rpc).await?.into_inner();
         let resp = InstallSnapshotResponse {
             term: resp.term,
-            last_applied: resp.last_applied.map(|l| LogId::from(l)),
+            last_applied: resp.last_applied.map(LogId::from),
         };
         Ok(resp)
     }
     async fn send_vote(&self, target: NodeId, rpc: VoteRequest) -> Result<VoteResponse> {
         let mut client = self
             .connections
-            .get_client(|c| RaftServiceClient::new(c), target)
+            .get_client(RaftServiceClient::new, target)
             .await;
 
         let resp = client.request_vote(rpc).await?.into_inner();
         let resp = VoteResponse {
             term: resp.term,
             vote_granted: resp.vote_granted,
-            last_log_id: resp.last_log_id.map(|l| LogId::from(l)),
+            last_log_id: resp.last_log_id.map(LogId::from),
         };
         Ok(resp)
     }

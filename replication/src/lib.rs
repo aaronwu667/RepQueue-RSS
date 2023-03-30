@@ -40,6 +40,7 @@ mod tests {
     use async_trait::async_trait;
     use openraft::testing::StoreBuilder;
     use tokio::sync::watch;
+
     struct MemStoreBuilder {}
 
     #[async_trait]

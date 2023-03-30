@@ -1,6 +1,6 @@
 use crate::NodeStatus;
 use async_trait::async_trait;
-use futures::{ready, Future, future};
+use futures::{future, ready, Future};
 use proto::common_decls::{Csn, TxnRes};
 use proto::{
     common_decls::{Empty, ExecNotifRequest},
@@ -16,7 +16,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     sync::Arc,
 };
-use tokio::sync::{mpsc, oneshot, RwLock, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tonic::{Request, Response, Status};
 
 mod read_transaction;
@@ -170,7 +170,7 @@ impl ManagerService for TransactionService {
         request: Request<AppendTransactRequest>,
     ) -> Result<Response<Empty>, Status> {
         // TODO (low priority): handle dynamic addition/removal of head (watch on node state)
-        if let Err(_) = self.new_req_tx.send(request.into_inner()).await {
+        if self.new_req_tx.send(request.into_inner()).await.is_err() {
             panic!("New request receiver dropped");
         }
 
@@ -184,7 +184,7 @@ impl ManagerService for TransactionService {
         // TODO (low priority): handle dynamic addition/removal of tail (watch on node state)
         match &self.exec_notif_tx {
             Some(c) => {
-                if let Err(_) = c.send(request.into_inner()).await {
+                if c.send(request.into_inner()).await.is_err() {
                     panic!("Exec notif receiver dropped");
                 }
                 Ok(Response::new(Empty {}))
@@ -202,7 +202,7 @@ impl ManagerService for TransactionService {
     ) -> Result<Response<Empty>, Status> {
         match &self.exec_append_tx {
             Some(c) => {
-                if let Err(_) = c.send(request.into_inner()).await {
+                if c.send(request.into_inner()).await.is_err() {
                     panic!("Exec append receiver dropped");
                 }
                 Ok(Response::new(Empty {}))

@@ -16,13 +16,9 @@ impl<T: AppData> tonic::IntoRequest<AppendEntriesRequestProto> for AppendEntries
         let req = AppendEntriesRequestProto {
             term: self.term,
             leader_id: self.leader_id,
-            prev_log_id: self.prev_log_id.map(|lid| LogIdProto::from(lid)),
-            leader_commit: self.leader_commit.map(|lid| LogIdProto::from(lid)),
-            entries: self
-                .entries
-                .into_iter()
-                .map(|ent| EntryProto::from(ent))
-                .collect(),
+            prev_log_id: self.prev_log_id.map(LogIdProto::from),
+            leader_commit: self.leader_commit.map(LogIdProto::from),
+            entries: self.entries.into_iter().map(EntryProto::from).collect(),
         };
         tonic::Request::new(req)
     }
@@ -33,9 +29,9 @@ impl<T: AppData> From<AppendEntriesRequestProto> for AppendEntriesRequest<T> {
         AppendEntriesRequest {
             term: r.term,
             leader_id: r.leader_id,
-            prev_log_id: r.prev_log_id.map(|l| LogId::from(l)),
-            entries: r.entries.into_iter().map(|ent| Entry::from(ent)).collect(),
-            leader_commit: r.leader_commit.map(|l| LogId::from(l)),
+            prev_log_id: r.prev_log_id.map(LogId::from),
+            entries: r.entries.into_iter().map(Entry::from).collect(),
+            leader_commit: r.leader_commit.map(LogId::from),
         }
     }
 }
@@ -72,7 +68,7 @@ impl tonic::IntoRequest<VoteRequestProto> for VoteRequest {
         let req = VoteRequestProto {
             term: self.term,
             candidate_id: self.candidate_id,
-            last_log_id: self.last_log_id.map(|lid| LogIdProto::from(lid)),
+            last_log_id: self.last_log_id.map(LogIdProto::from),
         };
         tonic::Request::new(req)
     }
@@ -83,7 +79,7 @@ impl From<VoteRequestProto> for VoteRequest {
         Self {
             term: value.term,
             candidate_id: value.candidate_id,
-            last_log_id: value.last_log_id.map(|l| LogId::from(l)),
+            last_log_id: value.last_log_id.map(LogId::from),
         }
     }
 }
@@ -122,7 +118,7 @@ impl<T: AppData> From<EntryProto> for Entry<T> {
     fn from(ent: EntryProto) -> Self {
         match serde_json::from_str(&ent.payload) {
             Ok(p) => Entry::<T> {
-                log_id: ent.log_id.map(|l| LogId::from(l)).unwrap(),
+                log_id: ent.log_id.map(LogId::from).unwrap(),
                 payload: p,
             },
             Err(_) => panic!("payload deserialization erro"),
@@ -133,7 +129,7 @@ impl<T: AppData> From<EntryProto> for Entry<T> {
 impl From<SnapshotMeta> for SnapshotMetaProto {
     fn from(meta: SnapshotMeta) -> Self {
         SnapshotMetaProto {
-            last_log_id: meta.last_log_id.map(|lid| LogIdProto::from(lid)),
+            last_log_id: meta.last_log_id.map(LogIdProto::from),
             snapshot_id: meta.snapshot_id,
         }
     }
@@ -142,7 +138,7 @@ impl From<SnapshotMeta> for SnapshotMetaProto {
 impl From<SnapshotMetaProto> for SnapshotMeta {
     fn from(meta: SnapshotMetaProto) -> Self {
         SnapshotMeta {
-            last_log_id: meta.last_log_id.map(|l| LogId::from(l)),
+            last_log_id: meta.last_log_id.map(LogId::from),
             snapshot_id: meta.snapshot_id,
         }
     }
@@ -162,7 +158,7 @@ impl From<InstallSnapshotResponse> for InstallSnapshotResponseProto {
     fn from(r: InstallSnapshotResponse) -> Self {
         InstallSnapshotResponseProto {
             term: r.term,
-            last_applied: r.last_applied.map(|l| LogIdProto::from(l)),
+            last_applied: r.last_applied.map(LogIdProto::from),
         }
     }
 }
@@ -172,7 +168,7 @@ impl From<VoteResponse> for VoteResponseProto {
         Self {
             term: value.term,
             vote_granted: value.vote_granted,
-            last_log_id: value.last_log_id.map(|l| LogIdProto::from(l)),
+            last_log_id: value.last_log_id.map(LogIdProto::from),
         }
     }
 }

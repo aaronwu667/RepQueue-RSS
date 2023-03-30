@@ -50,7 +50,7 @@ pub(super) async fn send_chain_rpc(req: RPCRequest, conn: Arc<Connection>) {
 
 pub(super) async fn send_cluster_rpc(sid: u32, req: RPCRequest, pool: Arc<ChannelPool<u32>>) {
     let mut client = pool
-        .get_client(|c| ShardServiceClient::new(c.clone()), sid)
+        .get_client(ShardServiceClient::new, sid)
         .await;
     match req {
         RPCRequest::ExecAppend(req) => {

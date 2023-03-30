@@ -32,10 +32,11 @@ async fn main() {
     let conn_pool = ChannelPool::new(None, args);
     let cluster_manager = ClusterManager::new(node_status, my_cluster_addr, num_shards, conn_pool);
     let cluster_manager_service = ClusterManagementServiceServer::new(cluster_manager);
-    if let Err(_) = Server::builder()
+    if Server::builder()
         .add_service(cluster_manager_service)
         .serve(my_config_addr)
         .await
+        .is_err()
     {
         panic!("Cluster management service failed to initialize")
     }

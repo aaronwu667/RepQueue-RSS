@@ -80,7 +80,7 @@ impl ClientSession {
         &self,
         txn: ReadOnlyTransaction,
     ) -> HashMap<String, Option<String>> {
-        if txn.len() == 0 {
+        if txn.is_empty() {
             return HashMap::new();
         }
         let mut crsn = self.crsn.lock().await;
@@ -90,7 +90,7 @@ impl ClientSession {
 
         // write dependency
         let rw_in_prog = self.rw_in_prog.read().await;
-        let write_dep = rw_in_prog.last().map(|e| *e);
+        let write_dep = rw_in_prog.last().copied();
         drop(rw_in_prog);
 
         // add entry to read result
@@ -135,7 +135,7 @@ impl ClientSession {
         &self,
         txn: ReadWriteTransaction,
     ) -> Option<HashMap<String, Option<String>>> {
-        if txn.len() == 0 {
+        if txn.is_empty() {
             return None;
         }
         let mut cwsn = self.cwsn.lock().await;
@@ -228,7 +228,7 @@ impl ClientLibrary for ClientSession {
                 };
                 drop(read_callbacks);
 
-                if let Err(_) = ch.send(complete_res.data.clone()) {
+                if ch.send(complete_res.data.clone()).is_err() {
                     panic!("Read receiver dropped")
                 }
             }
@@ -254,10 +254,13 @@ impl ClientLibrary for ClientSession {
         };
         drop(write_callbacks);
 
-        if let Err(_) = ch.send(
-            req.res
-                .map(|txn_res| txn_res.map.into_iter().map(|(k, v)| (k, v.value)).collect()),
-        ) {
+        if ch
+            .send(
+                req.res
+                    .map(|txn_res| txn_res.map.into_iter().map(|(k, v)| (k, v.value)).collect()),
+            )
+            .is_err()
+        {
             panic!("Read receiver dropped")
         }
 

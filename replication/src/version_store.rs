@@ -10,6 +10,7 @@ use std::{
     collections::{hash_map, BTreeMap, HashMap},
     fmt::Debug,
     io::Cursor,
+    ops::Bound::*,
     ops::RangeBounds,
 };
 use tokio::sync::{watch, Mutex, RwLock};
@@ -51,12 +52,11 @@ impl VersionStoreState {
     }
 
     // get value of key with greatest sequence number <= sn
-    pub fn get(&self, k: &String, sn: &u64) -> Option<&String> {
+    pub fn get(&self, k: &String, sn: &u64) -> Option<String> {
         self.data
             .get(k)
-            .map(|m| m.range(..sn).next_back())
-            .flatten()
-            .map(|tup| tup.1)
+            .and_then(|m| m.range((Unbounded, Included(sn))).next_back())
+            .map(|tup| tup.1.to_owned())
     }
 }
 
@@ -235,12 +235,11 @@ impl RaftStorage<StoreRequest, StoreResponse> for MemStore {
                                 Put(v) => state.put(k.to_owned(), ind, v.to_owned()),
                                 Get => {
                                     if let Some(ref mut m) = ent_res {
-                                        m.insert(
-                                            k.to_owned(),
-                                            state.get(k, &ind).map(|s| s.to_owned()),
-                                        );
+                                        m.insert(k.to_owned(), state.get(k, &ind));
                                     } else {
-                                        ent_res = Some(HashMap::new());
+                                        let mut new_map = HashMap::new();
+                                        new_map.insert(k.to_owned(), state.get(k, &ind));
+                                        ent_res = Some(new_map);
                                     }
                                 }
                             }
@@ -248,12 +247,12 @@ impl RaftStorage<StoreRequest, StoreResponse> for MemStore {
                         // update sequence numbers and notify
                         // Optimization: batch these notifications
                         state.ssn += 1;
-                        if let Err(_) = self.write_notif.send(state.ssn) {
+                        if self.write_notif.send(state.ssn).is_err() {
                             panic!("SSN update receivers dropped");
                         }
 
                         state.sh_exec = req.ind;
-                        if let Err(_) = self.read_notif.send(state.sh_exec) {
+                        if self.read_notif.send(state.sh_exec).is_err() {
                             panic!("sh_exec update receivers dropped");
                         }
 
@@ -268,7 +267,7 @@ impl RaftStorage<StoreRequest, StoreResponse> for MemStore {
                     });
                     res.push(StoreResponse { res: None });
                 }
-            }            
+            }
         }
         return Ok(res);
     }
@@ -295,7 +294,7 @@ impl RaftStorage<StoreRequest, StoreResponse> for MemStore {
         let snapshot_id = if let Some(last) = last_applied_log {
             format!("{}-{}", last.term, last.index)
         } else {
-            format!("No data")
+            "No data".to_string()
         };
 
         let meta = SnapshotMeta {

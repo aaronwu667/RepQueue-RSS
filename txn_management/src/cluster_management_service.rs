@@ -36,10 +36,10 @@ impl ClusterManager {
                     conn_pool,
                     node_status,
                 ));
-                if let Err(_) = Server::builder()
+                if Server::builder()
                     .add_service(txn_service)
                     .serve(my_cluster_addr)
-                    .await
+                    .await.is_err()
                 {
                     panic!("Transaction manager service failure")
                 }

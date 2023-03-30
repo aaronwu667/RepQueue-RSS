@@ -32,7 +32,7 @@ where
                 if nid == i {
                     continue;
                 }
-            } 
+            }
             new_map.insert(
                 T::try_from(i).unwrap(),
                 ChanStatus::NotInit(Endpoint::from_shared(addr).unwrap()),
@@ -47,8 +47,8 @@ where
     pub async fn connect(&self) -> Result<(), String> {
         let mut channels = self.channels.write().await;
         for (i, addr) in channels.iter_mut() {
-            match addr {
-                ChanStatus::NotInit(endpt) => match endpt.connect().await {
+            if let ChanStatus::NotInit(endpt) = addr {
+                match endpt.connect().await {
                     Ok(connection) => {
                         println!("Connection succeeded node {} with uri {}", i, endpt.uri());
                         *addr = ChanStatus::Init(connection);
@@ -58,11 +58,10 @@ where
                             "Connection to node {} failed with addr {}, {}",
                             i,
                             endpt.uri(),
-                            e.to_string()
+                            e
                         ))
                     }
-                },
-                _ => (),
+                }
             }
         }
         Ok(())
@@ -70,9 +69,11 @@ where
 
     pub async fn get_client<V>(&self, f: fn(Channel) -> V, node: T) -> V {
         let channels = self.channels.read().await;
-        let ent = channels.get(&node).unwrap_or_else(|| panic!("No channel associated with node {}", node));
+        let ent = channels
+            .get(&node)
+            .unwrap_or_else(|| panic!("No channel associated with node {}", node));
         match ent {
-            ChanStatus::Init(chan) => return f(chan.clone()),
+            ChanStatus::Init(chan) => f(chan.clone()),
             ChanStatus::NotInit(_) => {
                 panic!("Dynamic connection not implemented")
             }
@@ -81,6 +82,6 @@ where
 
     pub async fn get_all_nodes(&self) -> BTreeSet<T> {
         let channels = self.channels.read().await;
-        channels.keys().map(|e| *e).collect()
+        channels.keys().copied().collect()
     }
 }

@@ -24,10 +24,11 @@ async fn main() {
         conn_pool,
     ));
 
-    if let Err(_) = Server::builder()
+    if Server::builder()
         .add_service(cluster_manager)
         .serve(my_config_addr)
         .await
+        .is_err()
     {
         panic!("Cluster management service failed to initialize")
     }

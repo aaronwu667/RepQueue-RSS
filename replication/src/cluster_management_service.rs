@@ -30,7 +30,6 @@ impl ClusterManager {
         my_cluster_addr: std::net::SocketAddr,
         conn_pool: ChannelPool<u64>,
     ) -> Self {
-        tracing_subscriber::fmt::init();
         let conn_pool = Arc::new(conn_pool);
 
         // init raft
@@ -57,11 +56,12 @@ impl ClusterManager {
                 ));
                 // as per docs, will panic if binding to addr fails
                 println!("Shard and raft servers running on {}", my_cluster_addr);
-                if let Err(_) = Server::builder()
+                if Server::builder()
                     .add_service(shard_server)
                     .add_service(raft_server)
                     .serve(my_cluster_addr)
                     .await
+                    .is_err()
                 {
                     panic!("Raft and shard service failure")
                 }

@@ -21,7 +21,7 @@ pub(crate) fn add_remote_deps(
             .or_insert_with(|| {
                 let mut new_map = HashMap::new();
                 new_map.insert(k.to_owned(), ValueField::new(v.to_owned()));
-                return new_map;
+                new_map
             });
     }
 }

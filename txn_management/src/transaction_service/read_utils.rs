@@ -32,9 +32,8 @@ pub(super) async fn get_queue_fence(
             None => fence,
         };
     }
-    return (fence, res);
+    (fence, res)
 }
-
 
 // If already a future, return, else create new one and add handle to map
 pub(super) fn register_future(

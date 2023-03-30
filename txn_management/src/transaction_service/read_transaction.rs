@@ -57,7 +57,7 @@ impl TransactionService {
         }
 
         // Compute read fence and update client read metadata
-        let (mut fence, sub_txns) = get_queue_fence(&*state, request.keys).await;
+        let (mut fence, sub_txns) = get_queue_fence(&state, request.keys).await;
         let mut read_meta = state.read_meta.lock().await;
         if let Some(constraint) = request.lsn_const {
             fence = constraint;

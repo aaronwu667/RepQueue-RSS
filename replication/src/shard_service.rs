@@ -22,6 +22,8 @@ use proto::shard_net::{
 use tokio::sync::{mpsc, oneshot, watch};
 use tonic::{Request, Response, Status};
 
+const DEBUG: bool = true;
+
 struct WriteQueueEntry {
     req: ExecAppendRequest,
     ch: Option<oneshot::Receiver<HashMap<String, ValueField>>>,
@@ -77,7 +79,7 @@ impl ShardServer {
         tokio::spawn(Self::proc_write_queue(r, c, enq_rx, wn, shard_id));
         tokio::spawn(Self::dep_resolver(handle_dep_rx, dep_resolv_rx, m.clone()));
         tokio::spawn(Self::proc_read_queue(handle_read_rx, rn, m));
-        return ret;
+        ret
     }
 
     async fn serve_remote(
@@ -87,7 +89,7 @@ impl ShardServer {
         connections: Arc<ChannelPool<NodeId>>,
     ) {
         let mut client = connections
-            .get_client(|c| ShardServiceClient::new(c), remote_id)
+            .get_client(ShardServiceClient::new, remote_id)
             .await;
         if let Err(e) = client.put_read(PutReadRequest { ind, res: vals }).await {
             eprintln!("Serving remote read failed: {}", e);
@@ -95,40 +97,44 @@ impl ShardServer {
     }
 
     async fn serve_tail(resp: ExecNotifRequest, connections: Arc<ChannelPool<NodeId>>) {
-        tokio::spawn({
-            let conns = connections.clone();
-            async move {
-                let mut client = conns
-                    .get_client(|c| ManagerServiceClient::new(c), TAIL_NID)
-                    .await;
-                if let Err(e) = client.exec_notif(resp).await {
-                    eprintln!("Error when sending to manager node {}", e);
+        if !DEBUG {
+            tokio::spawn({
+                let conns = connections;
+                async move {
+                    let mut client = conns.get_client(ManagerServiceClient::new, TAIL_NID).await;
+                    if let Err(e) = client.exec_notif(resp).await {
+                        eprintln!("Error when sending to manager node {}", e);
+                    }
                 }
-            }
-        });
+            });
+        } else {
+            println!("{:?}", resp);
+        }
     }
 
     async fn serve_read(ent: ExecReadRequest, store: Arc<MemStore>) {
         let state = store.state.read().await;
         let mut res_map = HashMap::<String, ValueField>::new();
         for read_key in ent.txn.into_iter() {
-            let read_res = state
-                .get(&read_key, &ent.fence)
-                .and_then(|s| Some(s.to_owned()));
+            let read_res = state.get(&read_key, &ent.fence);
             res_map.insert(read_key, ValueField::new(read_res));
         }
         let resp = SessionRespReadRequest::new(res_map, ent.csn, ent.fence, ent.num_shards);
-        tokio::spawn(async move {
-            let client = ClientLibraryClient::connect(ent.addr).await;
-            match client {
-                Ok(mut c) => {
-                    if let Err(e) = c.session_resp_read(resp).await {
-                        eprintln!("Error when sending to client: {}", e);
+        if !DEBUG {
+            tokio::spawn(async move {
+                let client = ClientLibraryClient::connect(ent.addr).await;
+                match client {
+                    Ok(mut c) => {
+                        if let Err(e) = c.session_resp_read(resp).await {
+                            eprintln!("Error when sending to client: {}", e);
+                        }
                     }
+                    Err(e) => eprintln!("Error when connecting to client: {}", e),
                 }
-                Err(e) => eprintln!("Error when connecting to client: {}", e),
-            }
-        });
+            });
+        } else {
+            println!("{:?}", resp.res);
+        }
     }
 
     async fn executor(
@@ -223,6 +229,7 @@ impl ShardServer {
 
             if let Some(ent) = new_req {
                 if ent.req.sn == curr_ssn + 1 {
+                    //println!("Launching executor for entry with ssn {}", ent.req.sn);
                     // launch executor
                     tokio::spawn(Self::executor(
                         ent,
@@ -230,13 +237,12 @@ impl ShardServer {
                         connections.clone(),
                         shard_id,
                     ));
+                } else {
+                    //println!("Inserting entry with ssn {}", ent.req.sn);
+                    write_queue.insert(ent.req.sn, ent);
                 }
-            } else {
+            } else if let Some(head) = write_queue.keys().next().copied() {
                 // see if anything on the queue can be processed
-                let head = *write_queue
-                    .keys()
-                    .next()
-                    .expect("Servicer notified, but nothing on queue");
                 if head == curr_ssn + 1 {
                     // remove from queue and launch executor
                     let ent = write_queue.remove(&head).unwrap();
@@ -277,7 +283,7 @@ impl ShardServer {
                     match dep_buf.get(&resolve.ind) {
                         Some(buf_res) => {
                             if u32::try_from(buf_res.len()).unwrap() == resolve.num_deps {
-                                if let Err(_) = resolve.ch.send(buf_res.clone()) {
+                                if resolve.ch.send(buf_res.clone()).is_err() {
                                     eprintln!("Error while sending dependencies")
                                 }
                             } else {
@@ -300,7 +306,7 @@ impl ShardServer {
                             if let Some(Some(meta)) = metadata.get(&new_dep.ind) {
                                 if meta.num_deps == u32::try_from(map.len()).unwrap() {
                                     let dep_info = metadata.remove(&new_dep.ind).flatten().unwrap();
-                                    if let Err(_) = dep_info.ch.send(map.clone()) {
+                                    if dep_info.ch.send(map.clone()).is_err() {
                                         eprintln!("Error while sending dependencies")
                                     }
                                 }
@@ -316,7 +322,7 @@ impl ShardServer {
                             if let Some(Some(meta)) = metadata.get(&new_dep.ind) {
                                 if meta.num_deps == u32::try_from(map.len()).unwrap() {
                                     let dep_info = metadata.remove(&new_dep.ind).flatten().unwrap();
-                                    if let Err(_) = dep_info.ch.send(map.clone()) {
+                                    if dep_info.ch.send(map.clone()).is_err() {
                                         eprintln!("Error while sending dependencies")
                                     }
                                 }
@@ -351,7 +357,7 @@ impl ShardServer {
         loop {
             tokio::select! {
                 _ = sh_exec_watch.changed() => {
-                    let mut keys_exec = Vec::with_capacity(read_queue.len() / 3 as usize);
+                    let mut keys_exec = Vec::with_capacity(read_queue.len() / 3);
                     curr_sh_exec = *sh_exec_watch.borrow();
                     for k in read_queue.keys() {
                         if *k <= curr_sh_exec {
@@ -420,7 +426,7 @@ impl ShardService for ShardServer {
 
             // don't want to send empty map
             let mut res_opt = None;
-            if res.map.len() > 0 {
+            if !res.map.is_empty() {
                 res_opt = Some(res);
             }
 
@@ -438,7 +444,7 @@ impl ShardService for ShardServer {
                 let (send, recv) = oneshot::channel::<HashMap<String, ValueField>>();
                 dep_ch = Some(recv);
                 // WARNING: will fail when num of dep keys > sizeof(u32)
-                if let Err(_) = self
+                if self
                     .dep_resolv_ch
                     .send(DepResolveEntry {
                         ind: req.ind,
@@ -446,16 +452,18 @@ impl ShardService for ShardServer {
                         ch: send,
                     })
                     .await
+                    .is_err()
                 {
                     drop(state);
                     panic!("dep_notif receiver dropped");
                 }
             }
 
-            if let Err(_) = self
+            if self
                 .enqueue_reqs
                 .send(WriteQueueEntry { req, ch: dep_ch })
                 .await
+                .is_err()
             {
                 drop(state);
                 panic!("enqueue_reqs receiver dropped");
@@ -472,7 +480,7 @@ impl ShardService for ShardServer {
         request: Request<ExecReadRequest>,
     ) -> Result<Response<Empty>, Status> {
         let req = request.into_inner();
-        if let Err(_) = self.enqueue_reads.send(req).await {
+        if self.enqueue_reads.send(req).await.is_err() {
             panic!("enqueue_reads receiver closed or dropped");
         }
 
@@ -481,7 +489,7 @@ impl ShardService for ShardServer {
 
     async fn put_read(&self, request: Request<PutReadRequest>) -> Result<Response<Empty>, Status> {
         let req = request.into_inner();
-        if let Err(_) = self.handle_deps.send(req).await {
+        if self.handle_deps.send(req).await.is_err() {
             panic!("handle_deps receiver closed or dropped");
         }
 

@@ -123,7 +123,7 @@ impl TransactionService {
             let (cid, csn_num) = match ind_to_sh.get_mut(&partial_res.ind) {
                 Some(e) => {
                     e.1.remove(&partial_res.shard_id);
-                    if e.1.len() == 0 {
+                    if e.1.is_empty() {
                         done = true;
                     }
                     (e.0.cid, e.0.sn)
@@ -163,8 +163,7 @@ impl TransactionService {
                     }
                 }
                 (Some(res), None) => {
-                    let map = HashMap::from(res.map);
-                    (*transact_ent).result = Some(TxnRes { map });
+                    transact_ent.result = Some(TxnRes { map: res.map });
                 }
                 (None, None) | (None, Some(_)) => (),
             };
@@ -205,14 +204,12 @@ impl TransactionService {
             let mut ongoing_txns = state.ongoing_txs.lock().await;
             match ongoing_txns.entry(csn.cid) {
                 Occupied(mut o) => {
-                    if let Some(old_ent) = o
+                    if let Some(TxnStatus::NotStarted(_, notif)) = o
                         .get_mut()
                         .insert(csn.sn, TxnStatus::InProg(TransactionEntry::new(addr)))
                     {
-                        if let TxnStatus::NotStarted(_, notif) = old_ent {
-                            if let Err(_) = notif.send(true) {
-                                panic!("All watch receivers dropped")
-                            }
+                        if notif.send(true).is_err() {
+                            panic!("All watch receivers dropped")
                         }
                     }
                     o.get_mut().retain(|k, _| *k >= released_req.ack_bound);
@@ -269,10 +266,16 @@ impl TransactionService {
         node_state: Arc<NodeStatus>,
     ) {
         if let NodeStatus::Head(_) = *node_state {
-            schd_tx.send(req).await.expect("schd_ch receiver should not have dropped");
+            schd_tx
+                .send(req)
+                .await
+                .expect("schd_ch receiver should not have dropped");
             *log_ind += 1;
         } else if req.ind == *log_ind {
-            schd_tx.send(req).await.expect("schd_ch receiver should not have dropped");
+            schd_tx
+                .send(req)
+                .await
+                .expect("schd_ch receiver should not have dropped");
             *log_ind += 1;
 
             // send out continuous prefix of log queue
@@ -289,7 +292,10 @@ impl TransactionService {
 
             for ind in log_ents.into_iter() {
                 let head = log_queue.remove(&ind).unwrap();
-                schd_tx.send(head).await.expect("schd_ch receiver should not have dropped");
+                schd_tx
+                    .send(head)
+                    .await
+                    .expect("schd_ch receiver should not have dropped");
             }
             *log_ind = new_ind;
         } else {
@@ -355,22 +361,19 @@ impl TransactionService {
                             // Have seen this sequence number before
                             // Check if we have a response ready
                             let ongoing_txns = state.ongoing_txs.lock().await;
-                            match (&*node_state, ongoing_txns.get(&csn.cid)) {
-                                (NodeStatus::Head(_), Some(csn_map)) => {
-                                    if let Some(status) = csn_map.get(&csn.sn) {
-                                        if let TxnStatus::Done(txn_entry) = status {
-                                            let resp = SessionRespWriteRequest {
-                                                csn: Some(csn.clone()),
-                                                res: txn_entry.result.clone(),
-                                            };
-                                            tokio::spawn(send_client_rpc(
-                                                RPCRequest::SessResponseWrite(resp),
-                                                new_req.addr,
-                                            ));
-                                        }
-                                    }
+                            if let (NodeStatus::Head(_), Some(csn_map)) =
+                                (&*node_state, ongoing_txns.get(&csn.cid))
+                            {
+                                if let Some(TxnStatus::Done(txn_entry)) = csn_map.get(&csn.sn) {
+                                    let resp = SessionRespWriteRequest {
+                                        csn: Some(csn.clone()),
+                                        res: txn_entry.result.clone(),
+                                    };
+                                    tokio::spawn(send_client_rpc(
+                                        RPCRequest::SessResponseWrite(resp),
+                                        new_req.addr,
+                                    ));
                                 }
-                                _ => (),
                             }
                         } else {
                             // Otherwise, put onto queue for waiting
