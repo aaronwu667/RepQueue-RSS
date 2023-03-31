@@ -1,4 +1,4 @@
-use super::TransactionService;
+use super::{debug, TransactionService, is_sorted};
 use super::{
     rpc_utils::{send_chain_rpc, send_client_rpc, send_cluster_rpc, RPCRequest},
     write_utils::{update_view, update_view_tail},
@@ -199,6 +199,13 @@ impl TransactionService {
             let released_req = schd_rx.recv().await.expect("Schedule sender dropped");
             let ind = log.len();
             log.push_back(released_req.clone());
+            debug(format!("Last log index {}", ind));
+            if log.len() == 200 {              
+                assert!(is_sorted(&log.iter()
+                        .map(|e| e.csn.clone().unwrap().sn)
+                                  .collect::<Vec<_>>()));
+                debug("Ok".to_owned());
+            }
             let csn = released_req.csn.as_ref().expect("Missing csn");
             let addr = released_req.addr.clone();
             let mut ongoing_txns = state.ongoing_txs.lock().await;
@@ -208,6 +215,7 @@ impl TransactionService {
                         .get_mut()
                         .insert(csn.sn, TxnStatus::InProg(TransactionEntry::new(addr)))
                     {
+                        debug(format!("Resolving any reads waiting on CWSN {}", csn.sn));
                         if notif.send(true).is_err() {
                             panic!("All watch receivers dropped")
                         }
@@ -222,7 +230,6 @@ impl TransactionService {
                 }
             };
             drop(ongoing_txns);
-
             match &*node_state {
                 NodeStatus::Head(succ) => {
                     update_view(&state, ind, csn.clone(), &released_req.txn).await;

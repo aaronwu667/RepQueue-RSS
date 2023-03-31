@@ -72,7 +72,7 @@ async fn basic_store_test() {
     }
 }
 
-
+// TODO (low priority): Check dependency resolution
 #[tokio::test]
 async fn repl_store_test() {
     // get handle

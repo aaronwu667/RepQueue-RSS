@@ -230,6 +230,7 @@ impl ShardServer {
             if let Some(ent) = new_req {
                 if ent.req.sn == curr_ssn + 1 {
                     //println!("Launching executor for entry with ssn {}", ent.req.sn);
+                    //TODO: assert(is_sorted(...));
                     // launch executor
                     tokio::spawn(Self::executor(
                         ent,

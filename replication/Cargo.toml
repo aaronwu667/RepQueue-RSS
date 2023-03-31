@@ -17,6 +17,8 @@ prost = "*"
 proto = {path = "../proto"}
 tracing = "*"
 tracing-subscriber = "*"
+
+[dev-dependencies]
 rand = "0.8"
 
 [build-dependencies]

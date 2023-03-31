@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+#[derive(Debug)]
 pub(super) struct BucketEntry {
     pub sid: u32,
     pub visited: bool,
@@ -19,7 +20,7 @@ pub(super) fn get_buckets(num_shards: u32) -> BTreeMap<u64, BucketEntry> {
     let mut rem = u64::MAX % u64::from(num_shards);
     let mut prev = 0;
     let mut buckets = BTreeMap::<u64, BucketEntry>::new();
-    for i in 1..(num_shards + 1) {
+    for i in 0..num_shards {
         prev += step;
         if rem > 0 {
             prev += 1;

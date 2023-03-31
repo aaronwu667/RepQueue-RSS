@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 
 use super::read_utils::get_queue_fence;
-use super::ManagerNodeState;
+use super::{ManagerNodeState, debug};
 use super::TxnStatus;
 use super::{NotifyFutureWrap, TransactionService};
 
@@ -53,6 +53,7 @@ impl TransactionService {
             // wait for dependency resolution
             if let Some(fut) = watch {
                 fut.await;
+                debug(format!("Resolution complete for CRSN {}", csn.sn));
             }
         }
 

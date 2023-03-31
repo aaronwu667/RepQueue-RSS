@@ -30,6 +30,22 @@ type NotifyFuture<T> = future::Shared<NotifyFutureWrap<T>>;
 
 struct NotifyFutureWrap<T>(oneshot::Receiver<T>);
 
+const DEBUG : bool = true;
+
+fn debug(a: String) {
+    if DEBUG {
+        println!("{}", a);
+    }
+}
+
+fn is_sorted<T>(data: &[T]) -> bool
+where
+    T: Ord,
+{
+    data.windows(2).all(|w| w[0] <= w[1])
+}
+
+
 impl<T> Future for NotifyFutureWrap<T> {
     type Output = T;
 
@@ -75,7 +91,7 @@ impl ManagerNodeState {
     fn new(num_shards: u32) -> Self {
         let mut ssn_map = HashMap::new();
         for i in 0..num_shards {
-            ssn_map.insert(i, 1);
+            ssn_map.insert(i, 0);
         }
         let ongoing_txs = Mutex::new(HashMap::new());
         let txn_queues = RwLock::new(HashMap::new());
