@@ -25,7 +25,7 @@ message ExecNotifRequest {
 
 message ExecNotifInner {
   optional common_decls.TxnRes res = 1; 
-  uint32 shardId = 2; /// TODO (BUG): This should be shard id
+  uint32 shardId = 2; 
   uint64 ind = 3;
 }
 

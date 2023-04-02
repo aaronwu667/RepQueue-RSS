@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::Connection;
 
-use super::DEBUG;
+use crate::DEBUG;
 
 // boilerplate for sending RPCs
 #[derive(Debug)]
@@ -22,7 +22,7 @@ pub(super) enum RPCRequest {
 
 pub(super) async fn send_client_rpc(req: RPCRequest, addr: String) {
     if DEBUG {
-        println!("{:?}", req);
+        println!("Sending {:?} to addr {}", req, addr);
     } else {
         match req {
             RPCRequest::SessResponseWrite(req) => match ClientLibraryClient::connect(addr).await {
@@ -47,6 +47,9 @@ pub(super) async fn send_chain_rpc(req: RPCRequest, conn: Arc<Connection>) {
             }
         }
         RPCRequest::ExecAppendTransact(req) => {
+            if DEBUG {
+                println!("{:?}", req)
+            }
             if let Err(e) = client.exec_append_transact(req).await {
                 eprintln!("Backwards ack failed: {}", e);
             }
@@ -55,13 +58,12 @@ pub(super) async fn send_chain_rpc(req: RPCRequest, conn: Arc<Connection>) {
     }
 }
 
+// TODO (low priority): Handle wrong leader response
 pub(super) async fn send_cluster_rpc(sid: u32, req: RPCRequest, pool: Arc<ChannelPool<u32>>) {
     if DEBUG {
-        println!("{:?}", req) 
+        println!("{:?}", req)
     } else {
-        let mut client = pool
-            .get_client(ShardServiceClient::new, sid)
-            .await;
+        let mut client = pool.get_client(ShardServiceClient::new, sid).await;
         match req {
             RPCRequest::ExecAppend(req) => {
                 if let Err(e) = client.shard_exec_append(req).await {

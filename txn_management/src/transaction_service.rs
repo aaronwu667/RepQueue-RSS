@@ -30,21 +30,6 @@ type NotifyFuture<T> = future::Shared<NotifyFutureWrap<T>>;
 
 struct NotifyFutureWrap<T>(oneshot::Receiver<T>);
 
-const DEBUG : bool = true;
-
-fn debug(a: String) {
-    if DEBUG {
-        println!("{}", a);
-    }
-}
-
-fn is_sorted<T>(data: &[T]) -> bool
-where
-    T: Ord,
-{
-    data.windows(2).all(|w| w[0] <= w[1])
-}
-
 
 impl<T> Future for NotifyFutureWrap<T> {
     type Output = T;
@@ -57,24 +42,33 @@ impl<T> Future for NotifyFutureWrap<T> {
     }
 }
 
+#[derive(Debug)]
+enum RegFutResult {
+    Future(NotifyFuture<u64>),
+    Index(u64),
+}
+
+#[derive(Debug)]
 enum TxnStatus {
-    NotStarted(NotifyFuture<bool>, oneshot::Sender<bool>),
+    NotStarted(NotifyFuture<u64>, oneshot::Sender<u64>),
     InProg(TransactionEntry),
     Done(TransactionEntry),
 }
 
+#[derive(Debug)]
 struct TransactionEntry {
     result: Option<TxnRes>,
+    ind: u64,
     addr: String,
 }
 
 impl TransactionEntry {
-    fn new(addr: String) -> Self {
-        Self { result: None, addr }
+    fn new(ind: u64, addr: String) -> Self {
+        Self { result: None, ind, addr }
     }
 
-    fn new_res(result: Option<TxnRes>, addr: String) -> Self {
-        Self { result, addr }
+    fn new_res(result: Option<TxnRes>, ind: u64, addr: String) -> Self {
+        Self {result, ind, addr}
     }
 }
 

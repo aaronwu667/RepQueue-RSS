@@ -6,6 +6,21 @@ use tonic::transport::{Channel, Endpoint};
 pub mod cluster_management_service;
 pub mod transaction_service;
 
+const DEBUG : bool = false;
+
+fn debug(a: String) {
+    if DEBUG {
+        println!("{}", a);
+    }
+}
+
+fn is_sorted<T>(data: &[T]) -> bool
+where
+    T: Ord,
+{
+    data.windows(2).all(|w| w[0] <= w[1])
+}
+
 enum ConnectionStatus {
     Init(Channel),
     NotInit(Endpoint),

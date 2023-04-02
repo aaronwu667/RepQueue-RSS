@@ -1,10 +1,12 @@
-use super::{debug, TransactionService, is_sorted};
+use super::TransactionService;
 use super::{
     rpc_utils::{send_chain_rpc, send_client_rpc, send_cluster_rpc, RPCRequest},
     write_utils::{update_view, update_view_tail},
 };
 use super::{ManagerNodeState, TransactionEntry, TxnStatus};
+use crate::{debug, is_sorted};
 use crate::{Connection, NodeStatus};
+use proto::common_decls::Csn;
 use proto::{
     client_lib::SessionRespWriteRequest,
     common_decls::{exec_notif_request::ReqStatus, ExecNotifRequest, TxnRes},
@@ -65,8 +67,9 @@ impl TransactionService {
                 TxnStatus::InProg(e) => {
                     let copy_addr = e.addr.to_owned();
                     *transaction = TxnStatus::Done(TransactionEntry::new_res(
-                        req.res.clone(),
-                        copy_addr.clone(),
+                        e.result.clone(),
+                        e.ind,
+                        e.addr.to_owned(),
                     ));
                     copy_addr
                 }
@@ -173,6 +176,7 @@ impl TransactionService {
                 let res = transact_ent.result.clone();
                 *transaction = TxnStatus::Done(TransactionEntry::new_res(
                     res.clone(),
+                    transact_ent.ind,
                     transact_ent.addr.to_owned(),
                 ));
                 let req = ExecAppendTransactRequest {
@@ -195,15 +199,27 @@ impl TransactionService {
         cluster_conns: Arc<ChannelPool<u32>>,
     ) {
         let mut log = VecDeque::<AppendTransactRequest>::new();
+
+        // Blank entry so that all sequence numbers are consistent
+        log.push_back(AppendTransactRequest {
+            txn: HashMap::new(),
+            csn: Some(Csn { cid: 0, sn: 0 }),
+            ack_bound: 0,
+            ind: 0,
+            addr: "".to_owned(),
+        });
+
         loop {
             let released_req = schd_rx.recv().await.expect("Schedule sender dropped");
-            let ind = log.len();
+            let ind = u64::try_from(log.len()).unwrap();
             log.push_back(released_req.clone());
             debug(format!("Last log index {}", ind));
-            if log.len() == 200 {              
-                assert!(is_sorted(&log.iter()
+            if log.len() == 200 {
+                assert!(is_sorted(
+                    &log.iter()
                         .map(|e| e.csn.clone().unwrap().sn)
-                                  .collect::<Vec<_>>()));
+                        .collect::<Vec<_>>()
+                ));
                 debug("Ok".to_owned());
             }
             let csn = released_req.csn.as_ref().expect("Missing csn");
@@ -213,10 +229,10 @@ impl TransactionService {
                 Occupied(mut o) => {
                     if let Some(TxnStatus::NotStarted(_, notif)) = o
                         .get_mut()
-                        .insert(csn.sn, TxnStatus::InProg(TransactionEntry::new(addr)))
+                        .insert(csn.sn, TxnStatus::InProg(TransactionEntry::new(ind, addr)))
                     {
                         debug(format!("Resolving any reads waiting on CWSN {}", csn.sn));
-                        if notif.send(true).is_err() {
+                        if notif.send(ind).is_err() {
                             panic!("All watch receivers dropped")
                         }
                     }
@@ -225,7 +241,7 @@ impl TransactionService {
                 Vacant(v) => {
                     v.insert(BTreeMap::from([(
                         csn.sn,
-                        TxnStatus::InProg(TransactionEntry::new(addr)),
+                        TxnStatus::InProg(TransactionEntry::new(ind, addr)),
                     )]));
                 }
             };
@@ -234,7 +250,7 @@ impl TransactionService {
                 NodeStatus::Head(succ) => {
                     update_view(&state, ind, csn.clone(), &released_req.txn).await;
                     let new_req = AppendTransactRequest {
-                        ind: u64::try_from(ind).unwrap(),
+                        ind,
                         ..released_req
                     };
                     tokio::spawn(send_chain_rpc(
@@ -316,7 +332,7 @@ impl TransactionService {
         state: Arc<ManagerNodeState>,
         node_state: Arc<NodeStatus>,
     ) {
-        let mut log_ind = 0;
+        let mut log_ind = 1;
         // queues for deciding when to service
         let mut client_queue = HashMap::<u64, (u64, BTreeMap<u64, AppendTransactRequest>)>::new();
         let mut log_queue = BTreeMap::<u64, AppendTransactRequest>::new();

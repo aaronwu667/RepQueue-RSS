@@ -32,3 +32,10 @@ pub(super) fn get_buckets(num_shards: u32) -> BTreeMap<u64, BucketEntry> {
     }
     buckets
 }
+
+#[test]
+fn test_buckets() {
+    let res = get_buckets(3);
+    assert!(res.len() == 3);
+    assert!(*res.last_key_value().unwrap().0 == u64::MAX);
+}

@@ -12,6 +12,7 @@ mod utils;
 pub mod version_store;
 
 pub const TAIL_NID: u64 = 0;
+const DEBUG: bool = false;
 pub type RaftRepl = Raft<StoreRequest, StoreResponse, BaseNetwork, MemStore>;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]

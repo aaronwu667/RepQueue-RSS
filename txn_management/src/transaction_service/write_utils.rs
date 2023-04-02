@@ -10,11 +10,10 @@ use std::ops::Bound::*;
 // utils for transaction service
 pub(super) async fn update_view(
     state: &ManagerNodeState,
-    ind: usize,
+    ind: u64,
     csn: Csn,
     write_set: &HashMap<String, TransactionOp>,
 ) {
-    let ind = u64::try_from(ind).unwrap();
     let mut buckets = get_buckets(state.num_shards);
 
     let mut ind_to_sh = state.ind_to_sh.lock().await;
@@ -62,12 +61,10 @@ pub(super) async fn update_view(
 // TODO(med priority): dependency analysis in loop
 pub(super) async fn update_view_tail(
     state: &ManagerNodeState,
-    ind: usize,
+    ind: u64,
     csn: Csn,
     write_set: HashMap<String, TransactionOp>,
 ) -> HashMap<u32, ExecAppendRequest> {
-    let ind = u64::try_from(ind).unwrap();
-
     // compute buckets and put into BTreeSet
     let mut buckets = get_buckets(state.num_shards);
 

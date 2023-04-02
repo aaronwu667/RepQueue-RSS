@@ -39,7 +39,11 @@ sleep 0.5
 #sleep 0.5
 
 # test chain
-cargo test chain_test -- --nocapture http://127.0.0.1:5005 http://127.0.0.1:5001
+#cargo test chain_test -- --nocapture http://127.0.0.1:5005 http://127.0.0.1:5001
+
+#cargo test basic_tail_test -- --nocapture http://127.0.0.1:5005 http://127.0.0.1:5001
+
+cargo test client_integ_test -- --nocapture http://127.0.0.1:5001 http://127.0.0.1:5005 127.0.0.1:8001 > test_output/client.log
 
 sleep 5
 

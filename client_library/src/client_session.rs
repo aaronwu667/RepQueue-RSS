@@ -3,7 +3,7 @@ use proto::{
     client_lib::{
         client_library_server::ClientLibrary, SessionRespReadRequest, SessionRespWriteRequest,
     },
-    common_decls::{Csn, Empty},
+    common_decls::{Csn, Empty, TransactionOp},
     manager_net::{
         manager_service_client::ManagerServiceClient, AppendTransactRequest,
         ReadOnlyTransactRequest,
@@ -19,8 +19,6 @@ use tonic::{
     transport::{Channel, Endpoint},
     Request, Response, Status,
 };
-
-use crate::{ReadOnlyTransaction, ReadWriteTransaction};
 
 struct ReadResult {
     num_shards: Option<u32>,
@@ -39,8 +37,8 @@ type CallbackChannelWrite = oneshot::Sender<Option<HashMap<String, Option<String
 // TODO (high priority): Client side retries, sessions
 pub struct ClientSession {
     cid: u64,
-    cwsn: Arc<Mutex<u64>>,
-    crsn: Arc<Mutex<u64>>,
+    cwsn: Mutex<u64>,
+    crsn: Mutex<u64>,
     rw_in_prog: Arc<RwLock<BTreeSet<u64>>>,
     // upper_bounds: Arc<Mutex<BTreeMap<u64, u64>>>,
     read_results: Arc<RwLock<HashMap<u64, Arc<Mutex<ReadResult>>>>>,
@@ -51,7 +49,11 @@ pub struct ClientSession {
 }
 
 impl ClientSession {
-    async fn new(my_addr: String, head: String, chain_node: String) -> Self {
+    pub async fn new(
+        my_addr: String,
+        head: String,
+        chain_node: String,
+    ) -> (Self, ClientSessionServer) {
         let mut rng = rand::thread_rng();
         let head = match Endpoint::from_shared(head).unwrap().connect().await {
             Ok(chan) => chan,
@@ -63,23 +65,27 @@ impl ClientSession {
             Err(e) => panic!("Error when connecting to chain node {}", e),
         };
 
-        Self {
-            cid: rng.gen(),
-            cwsn: Arc::new(Mutex::new(0)),
-            crsn: Arc::new(Mutex::new(0)),
-            rw_in_prog: Arc::new(RwLock::new(BTreeSet::new())),
-            read_results: Arc::new(RwLock::new(HashMap::new())),
-            read_callbacks: Arc::new(Mutex::new(HashMap::new())),
-            write_callbacks: Arc::new(Mutex::new(HashMap::new())),
-            cluster_conns: ClusterConnections { head, chain_node },
-            my_addr,
-        }
+        let rw_in_prog = Arc::new(RwLock::new(BTreeSet::new()));
+        let read_results = Arc::new(RwLock::new(HashMap::new()));
+        let read_callbacks = Arc::new(Mutex::new(HashMap::new()));
+        let write_callbacks = Arc::new(Mutex::new(HashMap::new()));
+        (
+            Self {
+                cid: rng.gen(),
+                cwsn: Mutex::new(0),
+                crsn: Mutex::new(0),
+                rw_in_prog: rw_in_prog.clone(),
+                read_results: read_results.clone(),
+                read_callbacks: read_callbacks.clone(),
+                write_callbacks: write_callbacks.clone(),
+                cluster_conns: ClusterConnections { head, chain_node },
+                my_addr,
+            },
+            ClientSessionServer::new(rw_in_prog, read_results, read_callbacks, write_callbacks),
+        )
     }
 
-    async fn read_only_transaction(
-        &self,
-        txn: ReadOnlyTransaction,
-    ) -> HashMap<String, Option<String>> {
+    pub async fn read_only_transaction(&self, txn: Vec<String>) -> HashMap<String, Option<String>> {
         if txn.is_empty() {
             return HashMap::new();
         }
@@ -131,9 +137,9 @@ impl ClientSession {
         }
     }
 
-    async fn read_write_transaction(
+    pub async fn read_write_transaction(
         &self,
-        txn: ReadWriteTransaction,
+        txn: HashMap<String, TransactionOp>,
     ) -> Option<HashMap<String, Option<String>>> {
         if txn.is_empty() {
             return None;
@@ -146,7 +152,7 @@ impl ClientSession {
         let rw_in_prog = self.rw_in_prog.read().await;
         let ack_bound = match rw_in_prog.first() {
             Some(first) => *first,
-            None => 0,
+            None => my_cwsn,
         };
         drop(rw_in_prog);
 
@@ -168,6 +174,7 @@ impl ClientSession {
             ind: 0,
             addr: self.my_addr.clone(),
         };
+
         if let Err(e) = client.append_transact(req).await {
             panic!("Sending to head failed {}", e)
         }
@@ -180,8 +187,31 @@ impl ClientSession {
     }
 }
 
+pub struct ClientSessionServer {
+    rw_in_prog: Arc<RwLock<BTreeSet<u64>>>,
+    read_results: Arc<RwLock<HashMap<u64, Arc<Mutex<ReadResult>>>>>,
+    read_callbacks: Arc<Mutex<HashMap<u64, CallbackChannelRead>>>,
+    write_callbacks: Arc<Mutex<HashMap<u64, CallbackChannelWrite>>>,
+}
+
+impl ClientSessionServer {
+    fn new(
+        rw_in_prog: Arc<RwLock<BTreeSet<u64>>>,
+        read_results: Arc<RwLock<HashMap<u64, Arc<Mutex<ReadResult>>>>>,
+        read_callbacks: Arc<Mutex<HashMap<u64, CallbackChannelRead>>>,
+        write_callbacks: Arc<Mutex<HashMap<u64, CallbackChannelWrite>>>,
+    ) -> Self {
+        Self {
+            rw_in_prog,
+            read_results,
+            read_callbacks,
+            write_callbacks,
+        }
+    }
+}
+
 #[async_trait]
-impl ClientLibrary for ClientSession {
+impl ClientLibrary for ClientSessionServer {
     async fn session_resp_read(
         &self,
         request: Request<SessionRespReadRequest>,

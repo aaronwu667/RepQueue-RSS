@@ -2,27 +2,21 @@ use std::collections::{btree_map::Entry::*, BTreeMap, HashMap};
 use std::sync::Arc;
 
 use crate::channel_pool::ChannelPool;
-use crate::utils::add_remote_deps;
+use crate::utils::{add_remote_deps, self};
 use crate::version_store::MemStore;
-use crate::{RaftRepl, StoreRequest, TAIL_NID};
+use crate::{RaftRepl, StoreRequest};
 use async_trait::async_trait;
 use openraft::error::ClientWriteError;
 use openraft::NodeId;
-use proto::client_lib::client_library_client::ClientLibraryClient;
-use proto::client_lib::SessionRespReadRequest;
 use proto::common_decls::exec_notif_request::ReqStatus;
 use proto::common_decls::{transaction_op::Op::*, Empty};
 use proto::common_decls::{ExecNotifInner, ExecNotifRequest};
 use proto::common_decls::{TxnRes, ValueField};
-use proto::manager_net::manager_service_client::ManagerServiceClient;
-use proto::shard_net::shard_service_client::ShardServiceClient;
 use proto::shard_net::{
     shard_service_server::ShardService, ExecAppendRequest, ExecReadRequest, PutReadRequest,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 use tonic::{Request, Response, Status};
-
-const DEBUG: bool = true;
 
 struct WriteQueueEntry {
     req: ExecAppendRequest,
@@ -80,62 +74,7 @@ impl ShardServer {
         tokio::spawn(Self::dep_resolver(handle_dep_rx, dep_resolv_rx, m.clone()));
         tokio::spawn(Self::proc_read_queue(handle_read_rx, rn, m));
         ret
-    }
-
-    async fn serve_remote(
-        remote_id: u64,
-        ind: u64,
-        vals: HashMap<String, ValueField>,
-        connections: Arc<ChannelPool<NodeId>>,
-    ) {
-        let mut client = connections
-            .get_client(ShardServiceClient::new, remote_id)
-            .await;
-        if let Err(e) = client.put_read(PutReadRequest { ind, res: vals }).await {
-            eprintln!("Serving remote read failed: {}", e);
-        }
-    }
-
-    async fn serve_tail(resp: ExecNotifRequest, connections: Arc<ChannelPool<NodeId>>) {
-        if !DEBUG {
-            tokio::spawn({
-                let conns = connections;
-                async move {
-                    let mut client = conns.get_client(ManagerServiceClient::new, TAIL_NID).await;
-                    if let Err(e) = client.exec_notif(resp).await {
-                        eprintln!("Error when sending to manager node {}", e);
-                    }
-                }
-            });
-        } else {
-            println!("{:?}", resp);
-        }
-    }
-
-    async fn serve_read(ent: ExecReadRequest, store: Arc<MemStore>) {
-        let state = store.state.read().await;
-        let mut res_map = HashMap::<String, ValueField>::new();
-        for read_key in ent.txn.into_iter() {
-            let read_res = state.get(&read_key, &ent.fence);
-            res_map.insert(read_key, ValueField::new(read_res));
-        }
-        let resp = SessionRespReadRequest::new(res_map, ent.csn, ent.fence, ent.num_shards);
-        if !DEBUG {
-            tokio::spawn(async move {
-                let client = ClientLibraryClient::connect(ent.addr).await;
-                match client {
-                    Ok(mut c) => {
-                        if let Err(e) = c.session_resp_read(resp).await {
-                            eprintln!("Error when sending to client: {}", e);
-                        }
-                    }
-                    Err(e) => eprintln!("Error when connecting to client: {}", e),
-                }
-            });
-        } else {
-            println!("{:?}", resp.res);
-        }
-    }
+    }   
 
     async fn executor(
         mut ent: WriteQueueEntry,
@@ -178,7 +117,7 @@ impl ShardServer {
 
                     // serve
                     for (remote_id, vals) in remote_deps.into_iter() {
-                        tokio::spawn(Self::serve_remote(
+                        tokio::spawn(utils::serve_remote(
                             remote_id,
                             ent.req.ind,
                             vals,
@@ -195,14 +134,14 @@ impl ShardServer {
                         ind: ent.req.ind,
                     })),
                 };
-                Self::serve_tail(resp, connections).await;
+                utils::serve_tail(resp, connections).await;
             }
             Err(err) => match err {
                 ClientWriteError::ForwardToLeader(_) => {
                     let resp = ExecNotifRequest {
                         req_status: Some(ReqStatus::WrongLeader(true)),
                     };
-                    Self::serve_tail(resp, connections).await;
+                    utils::serve_tail(resp, connections).await;
                 }
                 _ => eprintln!("Raft group error"),
             },
@@ -369,13 +308,13 @@ impl ShardServer {
                     // execute all eligible reads
                     for k in keys_exec.into_iter() {
                         let ent = read_queue.remove(&k).unwrap();
-                        Self::serve_read(ent, store.clone()).await;
+                        utils::serve_read(ent, store.clone()).await;
                     }
                 },
                 new_req = req_ch.recv() => {
                     let new_req = new_req.expect("Enqueue read requests channel closed");
                     if new_req.fence <= curr_sh_exec {
-                        Self::serve_read(new_req, store.clone()).await;
+                        utils::serve_read(new_req, store.clone()).await;
                     } else {
                         read_queue.insert(new_req.fence, new_req);
                     }
@@ -417,7 +356,7 @@ impl ShardService for ShardServer {
 
             // serve remote reads again
             for (remote_id, vals) in remote_deps.into_iter() {
-                tokio::spawn(Self::serve_remote(
+                tokio::spawn(utils::serve_remote(
                     remote_id,
                     req.ind,
                     vals,
@@ -431,12 +370,18 @@ impl ShardService for ShardServer {
                 res_opt = Some(res);
             }
 
-            return Ok(Response::new(ExecNotifRequest {
+            // send empty response as promise
+            let resp = ExecNotifRequest {
                 req_status: Some(ReqStatus::Response(ExecNotifInner {
                     res: res_opt,
                     shard_id: self.shard_id,
                     ind: req.ind,
                 })),
+            };
+            utils::serve_tail(resp, self.connections.clone()).await;
+            
+            return Ok(Response::new(ExecNotifRequest {
+                req_status: Some(ReqStatus::Promise(true)),
             }));
         } else {
             // send request to queue servicer and give empty response as "promise"

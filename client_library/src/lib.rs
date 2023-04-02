@@ -1,8 +1,4 @@
-use std::collections::HashMap;
 
-use proto::common_decls::TransactionOp;
-
+pub use proto::common_decls::TransactionOp as TransactionOp;
+pub use proto::common_decls::transaction_op::Op as Op;
 pub mod client_session;
-
-pub type ReadWriteTransaction = HashMap<String, TransactionOp>;
-pub type ReadOnlyTransaction = Vec<String>;
