@@ -46,5 +46,9 @@ async fn client_integ_test() {
     let res = client_lib
         .read_only_transaction(vec![1.to_string(), 3.to_string()])
         .await;
+    // wait a bit for everything to resolve before exiting process
+
+    
+    
     println!("{:?}", res);
 }

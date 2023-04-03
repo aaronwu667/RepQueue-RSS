@@ -20,26 +20,33 @@ pub(super) enum RPCRequest {
     SessResponseWrite(SessionRespWriteRequest),
 }
 
-pub(super) async fn send_client_rpc(req: RPCRequest, addr: String) {
+pub(super) async fn send_client_rpc(
+    req: RPCRequest,
+    cid: u64,
+    addr: String,
+    client_conns: Arc<ChannelPool<u64>>,
+) {
     if DEBUG {
         println!("Sending {:?} to addr {}", req, addr);
-    } else {
-        match req {
-            RPCRequest::SessResponseWrite(req) => match ClientLibraryClient::connect(addr).await {
-                Ok(mut c) => {
-                    if let Err(e) = c.session_resp_write(req).await {
-                        eprintln!("Sending to client failed {}", e);
-                    }
-                }
-                Err(e) => eprintln!("Connecting to client failed {}", e),
-            },
-            _ => eprintln!("Wrong type of request for client"),
+    }
+    match req {
+        RPCRequest::SessResponseWrite(req) => {
+            let mut c = client_conns
+                .get_or_connect(ClientLibraryClient::new, cid, addr)
+                .await;
+            if let Err(e) = c.session_resp_write(req).await {
+                eprintln!("Sending to client failed {}", e);
+            }
         }
+        _ => eprintln!("Wrong type of request for client"),
     }
 }
 
 pub(super) async fn send_chain_rpc(req: RPCRequest, conn: Arc<Connection>) {
     let mut client = conn.get_client().await;
+    if DEBUG {
+        println!("{:?}", req)
+    }
     match req {
         RPCRequest::AppendTransact(req) => {
             if let Err(e) = client.append_transact(req).await {
@@ -47,9 +54,6 @@ pub(super) async fn send_chain_rpc(req: RPCRequest, conn: Arc<Connection>) {
             }
         }
         RPCRequest::ExecAppendTransact(req) => {
-            if DEBUG {
-                println!("{:?}", req)
-            }
             if let Err(e) = client.exec_append_transact(req).await {
                 eprintln!("Backwards ack failed: {}", e);
             }
@@ -62,20 +66,19 @@ pub(super) async fn send_chain_rpc(req: RPCRequest, conn: Arc<Connection>) {
 pub(super) async fn send_cluster_rpc(sid: u32, req: RPCRequest, pool: Arc<ChannelPool<u32>>) {
     if DEBUG {
         println!("{:?}", req)
-    } else {
-        let mut client = pool.get_client(ShardServiceClient::new, sid).await;
-        match req {
-            RPCRequest::ExecAppend(req) => {
-                if let Err(e) = client.shard_exec_append(req).await {
-                    eprintln!("communication with cluster failed: {}", e);
-                }
+    }
+    let mut client = pool.get_client(ShardServiceClient::new, sid).await;
+    match req {
+        RPCRequest::ExecAppend(req) => {
+            if let Err(e) = client.shard_exec_append(req).await {
+                eprintln!("communication with cluster failed: {}", e);
             }
-            RPCRequest::ExecRead(req) => {
-                if let Err(e) = client.shard_exec_read(req).await {
-                    eprintln!("communication with cluster failed: {}", e);
-                }
-            }
-            _ => eprintln!("Wrong type of request for cluster"),
         }
+        RPCRequest::ExecRead(req) => {
+            if let Err(e) = client.shard_exec_read(req).await {
+                eprintln!("communication with cluster failed: {}", e);
+            }
+        }
+        _ => eprintln!("Wrong type of request for cluster"),
     }
 }

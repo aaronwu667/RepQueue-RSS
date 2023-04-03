@@ -1,4 +1,4 @@
-use crate::NodeStatus;
+use crate::{NodeStatus, debug};
 use async_trait::async_trait;
 use futures::{future, ready, Future};
 use proto::common_decls::{Csn, TxnRes};
@@ -123,6 +123,7 @@ impl TransactionService {
         let state = Arc::new(ManagerNodeState::new(num_shards));
         let (new_req_tx, new_req_rx) = mpsc::channel(5000);
         let (schd_tx, schd_rx) = mpsc::channel(5000);
+        let client_conns = Arc::new(ChannelPool::new(None, vec![]));
         let mut exec_notif_tx = None; // RPC handler -> exec notif servicer sender
         let mut exec_append_tx = None;
         match &*node_status {
@@ -142,12 +143,13 @@ impl TransactionService {
                     state.clone(),
                     exec_append_rx,
                     Some(pred.clone()),
+                    client_conns.clone()
                 ));
                 exec_append_tx = Some(tx);
             }
             NodeStatus::Head(_) => {
                 let (tx, exec_append_rx) = mpsc::channel(8000);
-                tokio::spawn(Self::proc_exec_append(state.clone(), exec_append_rx, None));
+                tokio::spawn(Self::proc_exec_append(state.clone(), exec_append_rx, None, client_conns.clone()));
                 exec_append_tx = Some(tx);
             }
         }
@@ -156,6 +158,7 @@ impl TransactionService {
             schd_tx,
             state.clone(),
             node_status.clone(),
+            client_conns
         ));
         tokio::spawn(Self::proc_append(
             schd_rx,
@@ -192,6 +195,7 @@ impl ManagerService for TransactionService {
         request: Request<ExecNotifRequest>,
     ) -> Result<Response<Empty>, Status> {
         // TODO (low priority): handle dynamic addition/removal of tail (watch on node state)
+        debug(format!("Received exec notif request {:?}", request));
         match &self.exec_notif_tx {
             Some(c) => {
                 if c.send(request.into_inner()).await.is_err() {

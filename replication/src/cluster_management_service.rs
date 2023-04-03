@@ -30,6 +30,7 @@ impl ClusterManager {
         my_cluster_addr: std::net::SocketAddr,
         conn_pool: ChannelPool<u64>,
     ) -> Self {
+        //tracing_subscriber::fmt::init();
         let conn_pool = Arc::new(conn_pool);
 
         // init raft

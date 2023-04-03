@@ -20,6 +20,7 @@ use tonic::{
     Request, Response, Status,
 };
 
+#[derive(Debug)]
 struct ReadResult {
     num_shards: Option<u32>,
     data: HashMap<String, Option<String>>,
@@ -31,8 +32,8 @@ struct ClusterConnections {
     chain_node: Channel,
 }
 
-type CallbackChannelRead = oneshot::Sender<HashMap<String, Option<String>>>;
-type CallbackChannelWrite = oneshot::Sender<Option<HashMap<String, Option<String>>>>;
+type CallbackChannelRead = oneshot::Sender<(u64, HashMap<String, Option<String>>)>;
+type CallbackChannelWrite = oneshot::Sender<(u64, Option<HashMap<String, Option<String>>>)>;
 
 // TODO (high priority): Client side retries, sessions
 pub struct ClientSession {
@@ -85,9 +86,12 @@ impl ClientSession {
         )
     }
 
-    pub async fn read_only_transaction(&self, txn: Vec<String>) -> HashMap<String, Option<String>> {
+    pub async fn read_only_transaction(
+        &self,
+        txn: Vec<String>,
+    ) -> (u64, HashMap<String, Option<String>>) {
         if txn.is_empty() {
-            return HashMap::new();
+            return (0, HashMap::new());
         }
         let mut crsn = self.crsn.lock().await;
         *crsn += 1;
@@ -126,6 +130,7 @@ impl ClientSession {
             lsn_const: None,
             addr: self.my_addr.clone(),
         };
+
         if let Err(e) = client.read_only_transact(req).await {
             panic!("Sending to chain node failed {}", e)
         }
@@ -140,20 +145,18 @@ impl ClientSession {
     pub async fn read_write_transaction(
         &self,
         txn: HashMap<String, TransactionOp>,
-    ) -> Option<HashMap<String, Option<String>>> {
+    ) -> (u64, Option<HashMap<String, Option<String>>>) {
         if txn.is_empty() {
-            return None;
+            return (0, None);
         }
         let mut cwsn = self.cwsn.lock().await;
         *cwsn += 1;
         let my_cwsn = *cwsn;
         drop(cwsn);
 
-        let rw_in_prog = self.rw_in_prog.read().await;
-        let ack_bound = match rw_in_prog.first() {
-            Some(first) => *first,
-            None => my_cwsn,
-        };
+        let mut rw_in_prog = self.rw_in_prog.write().await;
+        rw_in_prog.insert(my_cwsn);
+        let ack_bound = *rw_in_prog.first().unwrap();
         drop(rw_in_prog);
 
         // register callback channel
@@ -229,7 +232,12 @@ impl ClientLibrary for ClientSessionServer {
         // update the entry
         let mut partial_res = partial_res_guard.lock().await;
         let curr_num = match partial_res.num_shards {
-            Some(num) => num,
+            Some(num) => {
+                assert!(num != 0);
+                let new_num = num - 1;
+                partial_res.num_shards = Some(new_num);
+                new_num
+            }
             None => {
                 let num = req.num_shards - 1;
                 partial_res.num_shards = Some(num);
@@ -258,7 +266,7 @@ impl ClientLibrary for ClientSessionServer {
                 };
                 drop(read_callbacks);
 
-                if ch.send(complete_res.data.clone()).is_err() {
+                if ch.send((sn, complete_res.data.clone())).is_err() {
                     panic!("Read receiver dropped")
                 }
             }
@@ -285,10 +293,11 @@ impl ClientLibrary for ClientSessionServer {
         drop(write_callbacks);
 
         if ch
-            .send(
+            .send((
+                sn,
                 req.res
                     .map(|txn_res| txn_res.map.into_iter().map(|(k, v)| (k, v.value)).collect()),
-            )
+            ))
             .is_err()
         {
             panic!("Read receiver dropped")

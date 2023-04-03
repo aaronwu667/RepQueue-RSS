@@ -29,44 +29,42 @@ pub(super) async fn serve_remote(
 }
 
 pub(super) async fn serve_tail(resp: ExecNotifRequest, connections: Arc<ChannelPool<NodeId>>) {
-    if !DEBUG {
-        tokio::spawn({
-            let conns = connections;
-            async move {
-                let mut client = conns.get_client(ManagerServiceClient::new, TAIL_NID).await;
-                if let Err(e) = client.exec_notif(resp).await {
-                    eprintln!("Error when sending to manager node {}", e);
-                }
+    tokio::spawn({
+        let conns = connections;
+        async move {
+            let mut client = conns.get_client(ManagerServiceClient::new, TAIL_NID).await;
+            if let Err(e) = client.exec_notif(resp).await {
+                eprintln!("Error when sending to manager node {}", e);
             }
-        });
-    } else {
-        println!("{:?}", resp);
-    }
+        }
+    });
 }
 
-pub(super) async fn serve_read(ent: ExecReadRequest, store: Arc<MemStore>) {
+pub(super) async fn serve_read(
+    ent: ExecReadRequest,
+    store: Arc<MemStore>,
+    client_conns: Arc<ChannelPool<u64>>,
+) {
     let state = store.state.read().await;
     let mut res_map = HashMap::<String, ValueField>::new();
     for read_key in ent.txn.into_iter() {
         let read_res = state.get(&read_key, &ent.fence);
         res_map.insert(read_key, ValueField::new(read_res));
     }
-    let resp = SessionRespReadRequest::new(res_map, ent.csn, ent.fence, ent.num_shards);
-    if !DEBUG {
-        tokio::spawn(async move {
-            let client = ClientLibraryClient::connect(ent.addr).await;
-            match client {
-                Ok(mut c) => {
-                    if let Err(e) = c.session_resp_read(resp).await {
-                        eprintln!("Error when sending to client: {}", e);
-                    }
-                }
-                Err(e) => eprintln!("Error when connecting to client: {}", e),
-            }
-        });
-    } else {
-        println!("{:?}", resp.res);
-    }
+    let csn = ent.csn.unwrap();
+    let cid = csn.cid;
+    let resp = SessionRespReadRequest::new(res_map, Some(csn), ent.fence, ent.num_shards);
+    tokio::spawn(async move {
+        let mut client = client_conns
+            .get_or_connect(ClientLibraryClient::new, cid, ent.addr)
+            .await;
+        if DEBUG {
+            println!("Sending response to client library {:?}", resp);
+        }
+        if let Err(e) = client.session_resp_read(resp).await {
+            eprintln!("Error when sending to client: {}", e);
+        }
+    });
 }
 
 // Miscellaneous data mapping utils

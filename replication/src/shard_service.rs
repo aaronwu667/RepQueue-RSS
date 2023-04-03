@@ -1,8 +1,5 @@
-use std::collections::{btree_map::Entry::*, BTreeMap, HashMap};
-use std::sync::Arc;
-
 use crate::channel_pool::ChannelPool;
-use crate::utils::{add_remote_deps, self};
+use crate::utils::{self, add_remote_deps};
 use crate::version_store::MemStore;
 use crate::{RaftRepl, StoreRequest};
 use async_trait::async_trait;
@@ -15,6 +12,8 @@ use proto::common_decls::{TxnRes, ValueField};
 use proto::shard_net::{
     shard_service_server::ShardService, ExecAppendRequest, ExecReadRequest, PutReadRequest,
 };
+use std::collections::{btree_map::Entry::*, BTreeMap, HashMap};
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, watch};
 use tonic::{Request, Response, Status};
 
@@ -72,9 +71,14 @@ impl ShardServer {
         };
         tokio::spawn(Self::proc_write_queue(r, c, enq_rx, wn, shard_id));
         tokio::spawn(Self::dep_resolver(handle_dep_rx, dep_resolv_rx, m.clone()));
-        tokio::spawn(Self::proc_read_queue(handle_read_rx, rn, m));
+        tokio::spawn(Self::proc_read_queue(
+            handle_read_rx,
+            rn,
+            m,
+            ChannelPool::new(None, vec![]),
+        ));
         ret
-    }   
+    }
 
     async fn executor(
         mut ent: WriteQueueEntry,
@@ -288,12 +292,13 @@ impl ShardServer {
         mut req_ch: mpsc::Receiver<ExecReadRequest>,
         mut sh_exec_watch: watch::Receiver<u64>,
         store: Arc<MemStore>,
+        client_conns: ChannelPool<u64>,
     ) -> ! {
         // TODO (low priority): client channel pool
         // fence |-> read request
-        let mut read_queue = BTreeMap::<u64, ExecReadRequest>::new();
+        let mut read_queue = BTreeMap::<u64, Vec<ExecReadRequest>>::new(); // If two have same fence...TODO fix
         let mut curr_sh_exec: u64 = 0;
-
+        let client_conns = Arc::new(client_conns);
         loop {
             tokio::select! {
                 _ = sh_exec_watch.changed() => {
@@ -308,15 +313,20 @@ impl ShardServer {
                     // execute all eligible reads
                     for k in keys_exec.into_iter() {
                         let ent = read_queue.remove(&k).unwrap();
-                        utils::serve_read(ent, store.clone()).await;
+                        for blocked_req in ent.into_iter() {
+                            utils::serve_read(blocked_req, store.clone(), client_conns.clone()).await;
+                        }
                     }
                 },
                 new_req = req_ch.recv() => {
                     let new_req = new_req.expect("Enqueue read requests channel closed");
                     if new_req.fence <= curr_sh_exec {
-                        utils::serve_read(new_req, store.clone()).await;
+                        utils::serve_read(new_req, store.clone(), client_conns.clone()).await;
                     } else {
-                        read_queue.insert(new_req.fence, new_req);
+                        match read_queue.entry(new_req.fence) {
+                            Occupied(mut o) => o.get_mut().push(new_req),
+                            Vacant(v) => {v.insert(vec![new_req]);}
+                        }
                     }
                 }
             }
@@ -379,7 +389,7 @@ impl ShardService for ShardServer {
                 })),
             };
             utils::serve_tail(resp, self.connections.clone()).await;
-            
+
             return Ok(Response::new(ExecNotifRequest {
                 req_status: Some(ReqStatus::Promise(true)),
             }));

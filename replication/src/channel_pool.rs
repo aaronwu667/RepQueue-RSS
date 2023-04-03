@@ -67,6 +67,20 @@ where
         Ok(())
     }
 
+    pub async fn get_or_connect<V>(&self, g: fn(Channel) -> V, node: T, addr: String) -> V {
+        let mut channels = self.channels.write().await;
+        let ent = channels.get(&node);
+        match ent {
+            Some(ChanStatus::Init(chan)) => g(chan.clone()),
+            Some(_) => panic!("Dyanmic connection not supported"),
+            None => {
+                let chan = Endpoint::from_shared(addr).unwrap().connect().await.unwrap();
+                channels.insert(node, ChanStatus::Init(chan.clone()));
+                g(chan)
+            }
+        }
+    }
+
     pub async fn get_client<V>(&self, f: fn(Channel) -> V, node: T) -> V {
         let channels = self.channels.read().await;
         let ent = channels

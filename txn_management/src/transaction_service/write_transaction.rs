@@ -32,6 +32,7 @@ impl TransactionService {
         state: Arc<ManagerNodeState>,
         mut exec_append_ch: mpsc::Receiver<ExecAppendTransactRequest>,
         pred: Option<Arc<Connection>>,
+        client_conns: Arc<ChannelPool<u64>>
     ) {
         loop {
             let req = exec_append_ch
@@ -84,11 +85,12 @@ impl TransactionService {
             if let Some(ref ch) = pred {
                 send_chain_rpc(RPCRequest::ExecAppendTransact(req), ch.clone()).await;
             } else {
+                let cid = csn.cid;
                 let resp = SessionRespWriteRequest {
                     res: req.res,
                     csn: Some(csn),
                 };
-                send_client_rpc(RPCRequest::SessResponseWrite(resp), addr).await;
+                send_client_rpc(RPCRequest::SessResponseWrite(resp), cid, addr, client_conns.clone()).await;
             }
         }
     }
@@ -140,10 +142,16 @@ impl TransactionService {
 
             // update ongoing txn map
             let mut ongoing_txns = state.ongoing_txs.lock().await;
-            let transaction = ongoing_txns
+            let transaction = match ongoing_txns
                 .get_mut(&cid)
                 .and_then(|csn_map| csn_map.get_mut(&csn_num))
-                .expect("Missing appropriate entries in ongoing transactions");
+            {
+                Some(e) => e,
+                None => {
+                    debug(format!("Ongoing transaction map: {:?}", ongoing_txns));
+                    panic!("Missing entries in ongoing txns");
+                }
+            };
 
             // view consistency check
             let transact_ent = match transaction {
@@ -331,6 +339,7 @@ impl TransactionService {
         schd_tx: mpsc::Sender<AppendTransactRequest>,
         state: Arc<ManagerNodeState>,
         node_state: Arc<NodeStatus>,
+        client_conns: Arc<ChannelPool<u64>>
     ) {
         let mut log_ind = 1;
         // queues for deciding when to service
@@ -394,7 +403,9 @@ impl TransactionService {
                                     };
                                     tokio::spawn(send_client_rpc(
                                         RPCRequest::SessResponseWrite(resp),
+                                        csn.cid,
                                         new_req.addr,
+                                        client_conns.clone()
                                     ));
                                 }
                             }

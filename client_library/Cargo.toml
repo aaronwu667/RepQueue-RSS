@@ -11,7 +11,13 @@ proto = {path = "../proto"}
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
 async-trait = "*"
 rand = "*"
+zipf = "*"
+futures = "*"
 
 
 [build-dependencies]
 tonic-build = "0.8"
+
+[[bin]]
+name = "single_client_latency"
+path = "src/bin/latency.rs"
