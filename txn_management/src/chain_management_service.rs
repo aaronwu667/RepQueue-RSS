@@ -46,7 +46,7 @@ impl ChainManagementService for ChainManager {
         let conn_pool = self.conn_pool.clone();
         let my_cluster_addr = self.my_cluster_addr;
         let num_shards = u32::try_from(req.leader_addrs.len()).unwrap();
-        conn_pool.add_addrs(req.leader_addrs).await;
+        conn_pool.add_addrs(None, req.leader_addrs).await;
 
         // construct node status
         let status = match req.node_type {

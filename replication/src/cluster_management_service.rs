@@ -56,7 +56,9 @@ impl ClusterManagementService for ClusterManager {
         let conn_pool = self.conn_pool.clone();
         let my_cluster_addr = self.my_cluster_addr;
         // add addresses to pool
-        conn_pool.add_addrs(req.cluster_addrs).await;
+        conn_pool
+            .add_addrs(Some(req.node_id), req.cluster_addrs)
+            .await;
 
         // init raft
         let config = Arc::new(Config::default().validate().unwrap());

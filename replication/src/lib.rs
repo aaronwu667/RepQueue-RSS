@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use version_store::MemStore;
 
+pub use proto::cluster_management_net::cluster_management_service_client::ClusterManagementServiceClient;
+pub use proto::cluster_management_net::InitNodeRequest;
+pub use proto::common_decls::Empty;
+
 pub mod channel_pool;
 pub mod cluster_management_service;
 pub mod network;

@@ -1,0 +1,13 @@
+[package]
+name = "control"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+serde = "*"
+serde_json = "*"
+txn_management = {path = "../txn_management"}
+replication = {path = "../replication"}

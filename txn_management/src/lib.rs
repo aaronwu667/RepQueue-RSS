@@ -3,10 +3,14 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tonic::transport::{Channel, Endpoint};
 
+// reexport
+pub use proto::chain_management_net::chain_management_service_client::ChainManagementServiceClient;
+pub use proto::chain_management_net::InitNodeRequest;
+
 pub mod chain_management_service;
 pub mod transaction_service;
 
-const DEBUG : bool = false;
+const DEBUG: bool = false;
 
 fn debug(a: String) {
     if DEBUG {

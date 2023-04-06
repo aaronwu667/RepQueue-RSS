@@ -32,9 +32,15 @@ where
         }
     }
 
-    pub async fn add_addrs(&self, addrs: Vec<String>) {
+    pub async fn add_addrs(&self, node_id: Option<u64>, addrs: Vec<String>) {
         let mut map = self.channels.write().await;
+        let my_node_id = node_id.map(|num| usize::try_from(num).unwrap());
         for (i, addr) in addrs.into_iter().enumerate() {
+            if let Some(nid) = my_node_id {
+                if nid == i {
+                    continue;
+                }
+            }
             map.insert(
                 T::try_from(i).unwrap(),
                 ChanStatus::NotInit(Endpoint::from_shared(addr).unwrap()),
