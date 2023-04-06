@@ -11,7 +11,7 @@ async fn client_integ_test() {
     let chain_node = args.pop().unwrap();
     let mut my_serv_addr = "http://".to_owned();
     my_serv_addr.push_str(&my_addr);
-    let (client_lib, server) = ClientSession::new(my_serv_addr, head_addr, chain_node).await;
+    let (client_lib, server) = ClientSession::new(500, my_serv_addr, head_addr, chain_node).await;
 
     // start client server in another task
     tokio::spawn(async move {

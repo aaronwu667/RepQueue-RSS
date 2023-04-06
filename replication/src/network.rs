@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use crate::channel_pool::ChannelPool;
 use crate::StoreRequest;
 use anyhow::Result;
@@ -9,6 +7,7 @@ use openraft::{
     AppendEntriesRequest, AppendEntriesResponse, LogId, NodeId, RaftNetwork,
 };
 use proto::raft_net::raft_service_client::RaftServiceClient;
+use std::sync::Arc;
 
 pub struct BaseNetwork {
     connections: Arc<ChannelPool<NodeId>>,
@@ -16,9 +15,7 @@ pub struct BaseNetwork {
 
 impl BaseNetwork {
     pub fn new(conf: Arc<ChannelPool<NodeId>>) -> Self {
-        Self {
-            connections: conf,
-        }
+        Self { connections: conf }
     }
 }
 

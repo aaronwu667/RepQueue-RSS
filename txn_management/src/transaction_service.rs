@@ -123,7 +123,7 @@ impl TransactionService {
         let state = Arc::new(ManagerNodeState::new(num_shards));
         let (new_req_tx, new_req_rx) = mpsc::channel(5000);
         let (schd_tx, schd_rx) = mpsc::channel(5000);
-        let client_conns = Arc::new(ChannelPool::new(None, vec![]));
+        let client_conns = Arc::new(ChannelPool::new());
         let mut exec_notif_tx = None; // RPC handler -> exec notif servicer sender
         let mut exec_append_tx = None;
         match &*node_status {

@@ -75,7 +75,7 @@ impl ShardServer {
             handle_read_rx,
             rn,
             m,
-            ChannelPool::new(None, vec![]),
+            ChannelPool::new(),
         ));
         ret
     }

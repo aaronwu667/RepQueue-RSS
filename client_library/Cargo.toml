@@ -13,6 +13,8 @@ async-trait = "*"
 rand = "*"
 zipf = "*"
 futures = "*"
+serde = "*"
+serde_json = "*"
 
 
 [build-dependencies]

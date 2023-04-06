@@ -9,6 +9,7 @@ enum ChanStatus {
     NotInit(Endpoint),
 }
 
+#[derive(Default)]
 pub struct ChannelPool<T> {
     channels: RwLock<HashMap<T, ChanStatus>>,
 }
@@ -24,22 +25,20 @@ where
         + std::cmp::Ord,
     T::Error: std::fmt::Debug,
 {
-    pub fn new(my_node_id: Option<u64>, addrs: Vec<String>) -> Self {
-        let mut new_map = HashMap::new();
-        let my_node_id = my_node_id.map(|num| usize::try_from(num).unwrap());
+    pub fn new() -> Self {
+        let new_map = HashMap::new();
+        Self {
+            channels: RwLock::new(new_map),
+        }
+    }
+
+    pub async fn add_addrs(&self, addrs: Vec<String>) {
+        let mut map = self.channels.write().await;
         for (i, addr) in addrs.into_iter().enumerate() {
-            if let Some(nid) = my_node_id {
-                if nid == i {
-                    continue;
-                }
-            }
-            new_map.insert(
+            map.insert(
                 T::try_from(i).unwrap(),
                 ChanStatus::NotInit(Endpoint::from_shared(addr).unwrap()),
             );
-        }
-        Self {
-            channels: RwLock::new(new_map),
         }
     }
 
@@ -74,7 +73,11 @@ where
             Some(ChanStatus::Init(chan)) => g(chan.clone()),
             Some(_) => panic!("Dyanmic connection not supported"),
             None => {
-                let chan = Endpoint::from_shared(addr).unwrap().connect().await.unwrap();
+                let chan = Endpoint::from_shared(addr)
+                    .unwrap()
+                    .connect()
+                    .await
+                    .unwrap();
                 channels.insert(node, ChanStatus::Init(chan.clone()));
                 g(chan)
             }

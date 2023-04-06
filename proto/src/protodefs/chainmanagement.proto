@@ -1,0 +1,20 @@
+syntax = "proto3";
+import "common.proto";
+package chain_management_net;
+
+service ChainManagementService {
+  rpc InitNode(InitNodeRequest) returns (common_decls.Empty);
+  rpc ConnectNode(common_decls.Empty) returns (common_decls.Empty);
+  rpc GetMetrics(common_decls.Empty) returns (common_decls.Empty);
+}
+
+message NodeId {
+  uint64 id = 1;
+}
+
+message InitNodeRequest {
+  repeated string leader_addrs = 1;
+  optional string pred = 2;
+  optional string succ = 3;
+  uint32 node_type = 4;
+}

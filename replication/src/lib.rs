@@ -3,6 +3,7 @@ use openraft::Raft;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use version_store::MemStore;
+
 pub mod channel_pool;
 pub mod cluster_management_service;
 pub mod network;

@@ -1,3 +1,5 @@
+use crate::Op::*;
+use crate::{StoreRequest, StoreResponse};
 use async_trait::async_trait;
 use openraft::types::v070::Entry;
 use openraft::{
@@ -14,9 +16,6 @@ use std::{
     ops::RangeBounds,
 };
 use tokio::sync::{watch, Mutex, RwLock};
-
-use crate::Op::*;
-use crate::{StoreRequest, StoreResponse};
 
 // Just use JSON to serialize things locally
 pub struct MemStoreSnapshot {

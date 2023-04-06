@@ -14,7 +14,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     sync::Arc,
 };
-use tokio::sync::{oneshot, Mutex, RwLock};
+use tokio::sync::{oneshot, Mutex, RwLock, Semaphore};
 use tonic::{
     transport::{Channel, Endpoint},
     Request, Response, Status,
@@ -40,6 +40,7 @@ pub struct ClientSession {
     cid: u64,
     cwsn: Mutex<u64>,
     crsn: Mutex<u64>,
+    max_concurrent: Arc<Semaphore>,
     rw_in_prog: Arc<RwLock<BTreeSet<u64>>>,
     // upper_bounds: Arc<Mutex<BTreeMap<u64, u64>>>,
     read_results: Arc<RwLock<HashMap<u64, Arc<Mutex<ReadResult>>>>>,
@@ -50,7 +51,10 @@ pub struct ClientSession {
 }
 
 impl ClientSession {
+    // TODO (Low priority): separate initialization of server from new struct
+    // -> i.e. support sessions
     pub async fn new(
+        max_concurrency: usize,
         my_addr: String,
         head: String,
         chain_node: String,
@@ -75,6 +79,7 @@ impl ClientSession {
                 cid: rng.gen(),
                 cwsn: Mutex::new(0),
                 crsn: Mutex::new(0),
+                max_concurrent: Arc::new(Semaphore::new(max_concurrency)),
                 rw_in_prog: rw_in_prog.clone(),
                 read_results: read_results.clone(),
                 read_callbacks: read_callbacks.clone(),
@@ -93,6 +98,13 @@ impl ClientSession {
         if txn.is_empty() {
             return (0, HashMap::new());
         }
+
+        let permit = self
+            .max_concurrent
+            .acquire()
+            .await
+            .expect("Semaphore acquisition error");
+
         let mut crsn = self.crsn.lock().await;
         *crsn += 1;
         let my_crsn = *crsn;
@@ -137,7 +149,10 @@ impl ClientSession {
 
         // wait for result
         match recv.await {
-            Ok(res) => res,
+            Ok(res) => {
+                drop(permit);
+                res
+            }
             Err(e) => panic!("Receiving from callback failed {}", e),
         }
     }
@@ -149,6 +164,13 @@ impl ClientSession {
         if txn.is_empty() {
             return (0, None);
         }
+
+        let permit = self
+            .max_concurrent
+            .acquire()
+            .await
+            .expect("Semaphore acquisition error");
+
         let mut cwsn = self.cwsn.lock().await;
         *cwsn += 1;
         let my_cwsn = *cwsn;
@@ -184,12 +206,16 @@ impl ClientSession {
 
         // wait for result
         match recv.await {
-            Ok(res) => res,
+            Ok(res) => {
+                drop(permit);
+                res
+            }
             Err(e) => panic!("Receiving from callback failed {}", e),
         }
     }
 }
 
+// Listens to responses from cluster and invokes registered callbacks
 pub struct ClientSessionServer {
     rw_in_prog: Arc<RwLock<BTreeSet<u64>>>,
     read_results: Arc<RwLock<HashMap<u64, Arc<Mutex<ReadResult>>>>>,
