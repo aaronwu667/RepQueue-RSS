@@ -4,7 +4,6 @@ package cluster_management_net;
 
 service ClusterManagementService {
   rpc InitNode(InitNodeRequest) returns (common_decls.Empty);
-  rpc ConnectNode(common_decls.Empty) returns (common_decls.Empty);
   rpc StartCluster(common_decls.Empty) returns (common_decls.Empty);
   /// Do not support changes in leadership
   rpc AddMember(NodeId) returns (common_decls.Empty);
@@ -17,7 +16,7 @@ message NodeId {
 }
 
 message InitNodeRequest {
-  repeated string cluster_addrs = 1;
+  map<uint64, string> cluster_addrs = 1;
   uint64 node_id = 2;
   uint32 shard_id = 3;
 }

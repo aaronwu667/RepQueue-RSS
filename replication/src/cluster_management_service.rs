@@ -46,6 +46,7 @@ impl ClusterManagementService for ClusterManager {
         &self,
         request: Request<InitNodeRequest>,
     ) -> Result<Response<Empty>, Status> {
+        tracing_subscriber::fmt::init();
         // make sure we are not initializing twice
         let mut raft_state = self.raft_state.lock().await;
         if raft_state.is_some() {
@@ -56,9 +57,8 @@ impl ClusterManagementService for ClusterManager {
         let conn_pool = self.conn_pool.clone();
         let my_cluster_addr = self.my_cluster_addr;
         // add addresses to pool
-        conn_pool
-            .add_addrs(Some(req.node_id), req.cluster_addrs)
-            .await;
+        println!("{:?}", req.cluster_addrs);
+        conn_pool.add_addrs_lazy(req.cluster_addrs).await;
 
         // init raft
         let config = Arc::new(Config::default().validate().unwrap());
@@ -106,13 +106,6 @@ impl ClusterManagementService for ClusterManager {
         });
 
         Ok(Response::new(Empty {}))
-    }
-
-    async fn connect_node(&self, _: Request<Empty>) -> Result<Response<Empty>, Status> {
-        match self.conn_pool.connect().await {
-            Ok(()) => return Ok(Response::new(Empty {})),
-            Err(s) => return Err(Status::internal(s)),
-        }
     }
 
     async fn start_cluster(&self, _: Request<Empty>) -> Result<Response<Empty>, Status> {

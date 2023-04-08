@@ -30,8 +30,9 @@ impl RaftNetwork<StoreRequest> for BaseNetwork {
         // get client from channel pool
         let mut client = self
             .connections
-            .get_client(RaftServiceClient::new, target)
-            .await;
+            .get_client(target, RaftServiceClient::new)
+            .await
+            .unwrap_or_else(|| panic!("No channel associated with node {}", target));
 
         let resp = client.append_entries(rpc).await?.into_inner();
         let resp = AppendEntriesResponse {
@@ -48,8 +49,9 @@ impl RaftNetwork<StoreRequest> for BaseNetwork {
     ) -> Result<InstallSnapshotResponse> {
         let mut client = self
             .connections
-            .get_client(RaftServiceClient::new, target)
-            .await;
+            .get_client(target, RaftServiceClient::new)
+            .await
+            .unwrap_or_else(|| panic!("No channel associated with node {}", target));
 
         let resp = client.install_snapshot(rpc).await?.into_inner();
         let resp = InstallSnapshotResponse {
@@ -61,8 +63,9 @@ impl RaftNetwork<StoreRequest> for BaseNetwork {
     async fn send_vote(&self, target: NodeId, rpc: VoteRequest) -> Result<VoteResponse> {
         let mut client = self
             .connections
-            .get_client(RaftServiceClient::new, target)
-            .await;
+            .get_client(target, RaftServiceClient::new)
+            .await
+            .unwrap_or_else(|| panic!("No channel associated with node {}", target));
 
         let resp = client.request_vote(rpc).await?.into_inner();
         let resp = VoteResponse {

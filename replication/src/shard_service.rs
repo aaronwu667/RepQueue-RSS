@@ -292,7 +292,7 @@ impl ShardServer {
         mut req_ch: mpsc::Receiver<ExecReadRequest>,
         mut sh_exec_watch: watch::Receiver<u64>,
         store: Arc<MemStore>,
-        client_conns: ChannelPool<u64>,
+        client_conns: ChannelPool<NodeId>,
     ) -> ! {
         // TODO (low priority): client channel pool
         // fence |-> read request

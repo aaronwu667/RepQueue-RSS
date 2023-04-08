@@ -11,3 +11,7 @@ serde = "*"
 serde_json = "*"
 txn_management = {path = "../txn_management"}
 replication = {path = "../replication"}
+
+[[bin]]
+name = "control"
+path = "src/main.rs"

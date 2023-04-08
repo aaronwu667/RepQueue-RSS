@@ -21,18 +21,25 @@ pub(super) async fn serve_remote(
     connections: Arc<ChannelPool<NodeId>>,
 ) {
     let mut client = connections
-        .get_client(ShardServiceClient::new, remote_id)
-        .await;
+        .get_client(remote_id, ShardServiceClient::new)
+        .await
+        .unwrap_or_else(|| panic!("No channel for target {}", remote_id));
     if let Err(e) = client.put_read(PutReadRequest { ind, res: vals }).await {
         eprintln!("Serving remote read failed: {}", e);
     }
 }
 
-pub(super) async fn serve_tail(resp: ExecNotifRequest, connections: Arc<ChannelPool<NodeId>>) {
+pub(super) async fn serve_tail(
+    resp: ExecNotifRequest,
+    connections: Arc<ChannelPool<NodeId>>,
+) {
     tokio::spawn({
         let conns = connections;
         async move {
-            let mut client = conns.get_client(ManagerServiceClient::new, TAIL_NID).await;
+            let mut client = conns
+                .get_client(TAIL_NID, ManagerServiceClient::new)
+                .await
+                .expect("No channel for tail");
             if let Err(e) = client.exec_notif(resp).await {
                 eprintln!("Error when sending to manager node {}", e);
             }
@@ -56,7 +63,7 @@ pub(super) async fn serve_read(
     let resp = SessionRespReadRequest::new(res_map, Some(csn), ent.fence, ent.num_shards);
     tokio::spawn(async move {
         let mut client = client_conns
-            .get_or_connect(ClientLibraryClient::new, cid, ent.addr)
+            .add_addr_eager(cid, ent.addr, ClientLibraryClient::new)
             .await;
         if DEBUG {
             println!("Sending response to client library {:?}", resp);

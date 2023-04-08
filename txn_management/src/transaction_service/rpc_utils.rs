@@ -32,7 +32,7 @@ pub(super) async fn send_client_rpc(
     match req {
         RPCRequest::SessResponseWrite(req) => {
             let mut c = client_conns
-                .get_or_connect(ClientLibraryClient::new, cid, addr)
+                .add_addr_eager(cid, addr, ClientLibraryClient::new)
                 .await;
             if let Err(e) = c.session_resp_write(req).await {
                 eprintln!("Sending to client failed {}", e);
@@ -67,7 +67,10 @@ pub(super) async fn send_cluster_rpc(sid: u32, req: RPCRequest, pool: Arc<Channe
     if DEBUG {
         println!("{:?}", req)
     }
-    let mut client = pool.get_client(ShardServiceClient::new, sid).await;
+    let mut client = pool
+        .get_client(sid, ShardServiceClient::new)
+        .await
+        .unwrap_or_else(|| panic!("No channel found for shard {}", sid));
     match req {
         RPCRequest::ExecAppend(req) => {
             if let Err(e) = client.shard_exec_append(req).await {

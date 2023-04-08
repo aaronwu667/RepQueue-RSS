@@ -1,17 +1,39 @@
-use std::collections::{BTreeSet, HashMap};
-use tokio::sync::RwLock;
+use futures::FutureExt;
+use std::{
+    collections::hash_map::Entry::*,
+    collections::{BTreeSet, HashMap},
+    sync::Arc,
+};
+use tokio::sync::{OnceCell, RwLock};
 use tonic::transport::{Channel, Endpoint};
 
 // A thread-safe pool of connections
 // TODO (low priority): clean this mess up and dynamic connection management
-enum ChanStatus {
-    Init(Channel),
-    NotInit(Endpoint),
+struct Connection {
+    endpoint: Endpoint,
+    chan: OnceCell<Channel>,
+}
+
+impl Connection {
+    fn new(endpoint: Endpoint) -> Self {
+        Self {
+            endpoint,
+            chan: OnceCell::new(),
+        }
+    }
+    async fn get_client<V>(&self, fun: fn(Channel) -> V) -> V {
+        let chan = self
+            .chan
+            .get_or_init(|| self.endpoint.connect().map(|r| r.unwrap()))
+            .await;
+        fun(chan.clone())
+    }
 }
 
 #[derive(Default)]
 pub struct ChannelPool<T> {
-    channels: RwLock<HashMap<T, ChanStatus>>,
+    // TODO Change to oncecell
+    channels: RwLock<HashMap<T, Arc<Connection>>>,
 }
 
 impl<T> ChannelPool<T>
@@ -32,75 +54,41 @@ where
         }
     }
 
-    pub async fn add_addrs(&self, node_id: Option<u64>, addrs: Vec<String>) {
+    pub async fn add_addrs_lazy(&self, addrs: HashMap<T, String>) {
         let mut map = self.channels.write().await;
-        let my_node_id = node_id.map(|num| usize::try_from(num).unwrap());
-        for (i, addr) in addrs.into_iter().enumerate() {
-            if let Some(nid) = my_node_id {
-                if nid == i {
-                    continue;
-                }
-            }
-            map.insert(
-                T::try_from(i).unwrap(),
-                ChanStatus::NotInit(Endpoint::from_shared(addr).unwrap()),
-            );
+        for (i, addr) in addrs.into_iter() {
+            let endpoint = Endpoint::from_shared(addr).unwrap();
+            map.insert(i, Arc::new(Connection::new(endpoint)));
         }
     }
 
-    // just use static conf for convenience
-    pub async fn connect(&self) -> Result<(), String> {
+    pub async fn add_addr_eager<V>(&self, node: T, addr: String, fun: fn(Channel) -> V) -> V {
         let mut channels = self.channels.write().await;
-        for (i, addr) in channels.iter_mut() {
-            if let ChanStatus::NotInit(endpt) = addr {
-                match endpt.connect().await {
-                    Ok(connection) => {
-                        println!("Connection succeeded node {} with uri {}", i, endpt.uri());
-                        *addr = ChanStatus::Init(connection);
-                    }
-                    Err(e) => {
-                        return Err(format!(
-                            "Connection to node {} failed with addr {}, {}",
-                            i,
-                            endpt.uri(),
-                            e
-                        ))
-                    }
-                }
+        let ent = channels.entry(node);
+        let chan_status = match ent {
+            Occupied(o) => o.get().clone(),
+            Vacant(v) => {
+                let endpoint = Endpoint::from_shared(addr).unwrap();
+                let new_status = Arc::new(Connection::new(endpoint));
+                v.insert(new_status.clone());
+                new_status
             }
-        }
-        Ok(())
+        };
+        drop(channels);
+
+        chan_status.get_client(fun).await
     }
 
-    pub async fn get_or_connect<V>(&self, g: fn(Channel) -> V, node: T, addr: String) -> V {
-        let mut channels = self.channels.write().await;
-        let ent = channels.get(&node);
-        match ent {
-            Some(ChanStatus::Init(chan)) => g(chan.clone()),
-            Some(_) => panic!("Dyanmic connection not supported"),
-            None => {
-                let chan = Endpoint::from_shared(addr)
-                    .unwrap()
-                    .connect()
-                    .await
-                    .unwrap();
-                channels.insert(node, ChanStatus::Init(chan.clone()));
-                g(chan)
-            }
-        }
-    }
-
-    pub async fn get_client<V>(&self, f: fn(Channel) -> V, node: T) -> V {
+    pub async fn get_client<V>(&self, node: T, fun: fn(Channel) -> V) -> Option<V> {
         let channels = self.channels.read().await;
-        let ent = channels
-            .get(&node)
-            .unwrap_or_else(|| panic!("No channel associated with node {}", node));
-        match ent {
-            ChanStatus::Init(chan) => f(chan.clone()),
-            ChanStatus::NotInit(_) => {
-                panic!("Dynamic connection not implemented")
-            }
-        }
+        let ent = channels.get(&node);
+        let chan_status = match ent {
+            Some(status) => status.clone(),
+            None => return None,
+        };
+        drop(channels);
+
+        Some(chan_status.get_client(fun).await)
     }
 
     pub async fn get_all_nodes(&self) -> BTreeSet<T> {

@@ -26,6 +26,12 @@ enum TxnType {
     RW(HashMap<String, TransactionOp>),
 }
 
+fn get_uri(host: &str) -> String {
+    let mut uri = "http://".to_owned();
+    uri.push_str(host);
+    uri
+}
+
 #[tokio::main]
 async fn main() {
     let mut args: Vec<String> = env::args().skip(1).collect();
@@ -34,10 +40,11 @@ async fn main() {
     let conf_values: Conf =
         serde_json::from_str(conf_file.as_ref()).expect("Unable to parse config file");
 
-    let mut my_serv_addr = "http://".to_owned();
-    my_serv_addr.push_str(&conf_values.my_addr);
-    let (client_lib, server) =
-        ClientSession::new(500, my_serv_addr, conf_values.head_addr, conf_values.chain_addr).await;
+    let my_serv_addr = get_uri(&conf_values.my_addr);
+    let head_addr = get_uri(&conf_values.head_addr);
+    let chain_addr = get_uri(&conf_values.chain_addr);
+
+    let (client_lib, server) = ClientSession::new(500, my_serv_addr, head_addr, chain_addr).await;
     let client_lib = Arc::new(client_lib);
     // start client server in another task
     tokio::spawn(async move {

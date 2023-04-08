@@ -222,14 +222,6 @@ impl TransactionService {
             let ind = u64::try_from(log.len()).unwrap();
             log.push_back(released_req.clone());
             debug(format!("Last log index {}", ind));
-            if log.len() == 200 {
-                assert!(is_sorted(
-                    &log.iter()
-                        .map(|e| e.csn.clone().unwrap().sn)
-                        .collect::<Vec<_>>()
-                ));
-                debug("Ok".to_owned());
-            }
             let csn = released_req.csn.as_ref().expect("Missing csn");
             let addr = released_req.addr.clone();
             let mut ongoing_txns = state.ongoing_txs.lock().await;

@@ -46,7 +46,7 @@ impl ChainManagementService for ChainManager {
         let conn_pool = self.conn_pool.clone();
         let my_cluster_addr = self.my_cluster_addr;
         let num_shards = u32::try_from(req.leader_addrs.len()).unwrap();
-        conn_pool.add_addrs(None, req.leader_addrs).await;
+        conn_pool.add_addrs_lazy(req.leader_addrs).await;
 
         // construct node status
         let status = match req.node_type {
@@ -78,6 +78,10 @@ impl ChainManagementService for ChainManager {
                 let txn_service = ManagerServiceServer::new(TransactionService::new(
                     num_shards, conn_pool, arc_status,
                 ));
+                println!(
+                    "chain node running on {}",
+                    my_cluster_addr.clone()
+                );
                 if Server::builder()
                     .add_service(txn_service)
                     .serve(my_cluster_addr)
@@ -92,24 +96,6 @@ impl ChainManagementService for ChainManager {
         Ok(Response::new(Empty {}))
     }
 
-    async fn connect_node(&self, _: Request<Empty>) -> Result<Response<Empty>, Status> {
-        let node_status = self.node_status.lock().await;
-        let node_status = match &*node_status {
-            Some(s) => s,
-            None => return Err(Status::not_found("Node not yet initialized")),
-        };
-        let node_connect_res = node_status.connect().await;
-        let pool_connect_res = self.conn_pool.connect().await;
-        match (node_connect_res, pool_connect_res) {
-            (Err(s), Err(r)) => Err(Status::internal(format!(
-                "Both pool and chain connections failed. Pool {} \n Chain {}",
-                s, r
-            ))),
-            (Err(s), Ok(())) => Err(Status::internal(format!("Chain connection failed {}", s))),
-            (Ok(()), Err(s)) => Err(Status::internal(format!("Cluster connection failed {}", s))),
-            _ => Ok(Response::new(Empty {})),
-        }
-    }
     async fn get_metrics(&self, _: Request<Empty>) -> Result<Response<Empty>, Status> {
         let node_status = self.node_status.lock().await;
         let _ = match &*node_status {
