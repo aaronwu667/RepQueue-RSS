@@ -19,6 +19,7 @@ fn debug(a: String) {
     }
 }
 
+#[allow(dead_code)]
 fn is_sorted<T>(data: &[T]) -> bool
 where
     T: Ord,
