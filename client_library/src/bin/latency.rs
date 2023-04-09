@@ -19,6 +19,10 @@ struct Conf {
     my_addr: String, // no http
     head_addr: String,
     chain_addr: String,
+    results_path: String,
+    client_machine: u32,
+    client_proc: u32,
+    experiment_num: u32,
 }
 
 enum TxnType {
@@ -61,7 +65,7 @@ async fn main() {
     // Create transactions for experiment
     let zipf = zipf::ZipfDistribution::new(conf_values.num_keys, conf_values.skew).unwrap();
     let mut rng = rand::thread_rng();
-    let num_txns = 500;
+    let num_txns = 510; // 10 transactions to warm up
     let mut txns: Vec<HashMap<String, TransactionOp>> = Vec::with_capacity(num_txns);
     for _ in 0..num_txns {
         let num_keys = 10; // should probably ask about this
@@ -97,9 +101,19 @@ async fn main() {
         .map(|e| format!("{}, {}", e.0, e.1))
         .collect();
 
-    // flush latencies to disk
-    let mut out = File::create("/home/aaron/md-rss/test_output/write_only_latency.log")
-        .expect("File failed to open");
+    let base_path = format!(
+        "{}/out_{}",
+        conf_values.results_path, conf_values.experiment_num
+    );
+    fs::create_dir_all(base_path.clone()).unwrap();
+
+    // write latencies to disk
+    let mut write_only_path = base_path.clone();
+    write_only_path.push_str(&format!(
+        "/WO_client_{}-{}.log",
+        conf_values.client_machine, conf_values.client_proc
+    ));
+    let mut out = File::create(write_only_path).expect("File failed to open");
     out.write_all(res.join("\n").as_bytes()).unwrap();
 
     // start mixed read-only and read-write workload
@@ -157,8 +171,12 @@ async fn main() {
         .map(|e| format!("{}, {}", e.0 + 1, e.1))
         .collect();
 
-    // flush latencies to disk
-    let mut out = File::create("/home/aaron/md-rss/test_output/mixed_workload_latency.log")
-        .expect("File failed to open");
+    // write latencies to disk
+    let mut mixed_path = base_path;
+    mixed_path.push_str(&format!(
+        "/mix_client_{}-{}.log",
+        conf_values.client_machine, conf_values.client_proc
+    ));
+    let mut out = File::create(mixed_path).expect("File failed to open");
     out.write_all(res.join("\n").as_bytes()).unwrap();
 }

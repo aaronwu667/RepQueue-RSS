@@ -4,16 +4,11 @@ import sys
 
 def kill_cluster(config):
     if not config['run_locally']:
-        for i in range(config['repl_factor'] + config['num_shards']):
-            name = 'node%s' % i
+        for i in range(config['total_num_servers']):
+            name = config['server_name_format_str'] % i
             hostname = config['host_format_str'] % (name, config['experiment_name'], config['project_name'])
-            
-            kill_remote_process_by_name("repl_store", config['user'], hostname)
-
-            for i in range(config['num_chain']):
-                name = 'node%s' % (i + config['repl_factor'] + config['num_shards'])
-                hostname = config['host_format_str'] % (name, config['experiment_name'], config['project_name'])                                
-                kill_remote_process_by_name("txn_manager", config['user'], hostname)
+            kill_remote_process_by_name("repl_store", config['user'], hostname)           
+            kill_remote_process_by_name("txn_manager", config['user'], hostname)
     else:
         run_local_command_sync(kill_remote_process_by_name_cmd("repl_store"))
         run_local_command_sync(kill_remote_process_by_name_cmd("txn_manager"))

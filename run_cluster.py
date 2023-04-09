@@ -3,6 +3,59 @@ import time
 import sys
 import subprocess
 import os
+from datetime import datetime
+from kill_cluster import kill_cluster
+
+def experiment_driver(config):
+    # TODO multiple experiments
+    now = datetime.now()
+    results_path = config['experiment_path'] + "/results/" + now.strftime("%d-%m-%Y-%H-%M-%S")
+    experiment_num = 0
+    run_experiment(config, results_path, experiment_num)
+    
+def run_experiment(config, results_path, experiment_num):
+    # start cluster
+    raft_servers, chain_servers = get_init_cluster(config)    
+    
+    # run clients, static round robin load balancing over chain
+    client_port = 8001
+    client_chain = chain_servers[:-1]
+    client_mach_commands = {}
+    for i in range(config['num_client_machines']):
+        name = config['client_name_format_str'] % i
+        hostname = config['client_host_format_str'] % (name, config['experiment_name'], config['project_name'])
+        ip = get_ip_for_server_name(name, config['user'], hostname, config['run_locally'])
+        machine_commands = ["cd", config['experiment_path'], ";"]
+        for j in range(config['clients_per_machine']):
+            ind = j % len(client_chain)
+            conf_path = gen_client_config(i, j, ip + ":" + str(client_port),
+                                          client_chain[0]['cluster'],
+                                          client_chain[ind]['cluster'],
+                                          results_path, experiment_num, config)
+            client_port += 1
+            machine_commands.append("cargo run --release --bin "
+                                    + config['client_type'] + " -- "
+                                    + conf_path + "&")            
+            if not config['run_locally']:
+                send_to_remote(config['user'], hostname, conf_path, conf_path)
+
+        client_mach_commands[hostname] = ' '.join(machine_commands)
+        if not config['run_locally']:
+            client_port = 8001
+            
+    # run everything async now
+    if not config['run_locally']:
+        for (hostname, command) in client_mach_commands.items():
+            run_remote_command_async(command, config['user'], hostname)
+    else:
+        for command in client_mach_commands.values():
+            run_local_command_async(command)
+    
+    time.sleep(config['experiment_duration'])
+    
+    # kill servers
+    kill_cluster(config)
+
 
 def get_init_cluster(config):
     commands = []
@@ -19,8 +72,8 @@ def get_init_cluster(config):
     # build and start synchronously
     for i in range(config['repl_factor'] * config['num_shards']):
         addrs = {}
-        name = 'node%s' % i
-        hostname = config['host_format_str'] % (name, config['experiment_name'], config['project_name'])
+        name = config['server_name_format_str'] % i
+        hostname = config['server_host_format_str'] % (name, config['experiment_name'], config['project_name'])
         # get experiment IP address
         ip = get_ip_for_server_name(name, config['user'], hostname, config['run_locally'])
         if not config['run_locally']:
@@ -49,8 +102,8 @@ def get_init_cluster(config):
         
     for i in range(config['num_chain']):
         addrs = {}
-        name = 'node%s' % (i + config['repl_factor'] + config['num_shards'])
-        hostname = config['host_format_str'] % (name, config['experiment_name'], config['project_name'])
+        name = config['server_name_format_str'] % (i + config['repl_factor'] + config['num_shards'])
+        hostname = config['server_host_format_str'] % (name, config['experiment_name'], config['project_name'])
 
         # get experiment ip
         if not config['run_locally']:
@@ -91,7 +144,7 @@ def get_init_cluster(config):
         json.dump(new_conf, control_conf)
 
     # send to control and start
-    control_hostname = config['host_format_str']%('control', config['experiment_name'], config['project_name'])
+    control_hostname = config['server_host_format_str']%('control', config['experiment_name'], config['project_name'])
     control_bin_command = ["cd " + config['experiment_path']+ "; "+
                        "cargo run --release --bin control -- " + config_file_path + " > test_output/control.log"]
     
@@ -100,32 +153,29 @@ def get_init_cluster(config):
         run_remote_command_sync(control_bin_command, config['user'], control_hostname)
     else:
         run_local_command_sync(control_bin_command)
-    
-    # create clients, static round robin load balancing over chain
-    client_port = 8001
-    client_chain = chain_servers[:-1]
-    for i in range(config['num_client_machines']):
-        name = 'client%s' % i
-        hostname = config['host_format_str'] % (name, config['experiment_name'], config['project_name'])
-        ip = get_ip_for_server_name(name, config['user'], hostname, config['run_locally'])
-        for j in range(config['clients_per_machine']):
-            ind = j % len(client_chain)
-            gen_client_config(i, j, ip + ":" + str(client_port), client_chain[0]['cluster'], client_chain[ind]['cluster'] ,config)
-            client_port += 1
-        if not config['run_locally']:
-            client_port = 8001
+
+    return raft_servers, chain_servers
+
 
     
-def gen_client_config(machine, client, my_addr, head_addr, chain_addr, config):   
+def gen_client_config(machine, client,
+                      my_addr, head_addr,
+                      chain_addr, results_path,
+                      experiment_num, config):
     client_config_path = config['experiment_path'] + '/temp/client_config_%s_%s.json'%(machine, client)
     with open(client_config_path, "w") as client_conf:
         new_conf = {}
+        new_conf['client_machine'] = machine
+        new_conf['client_proc'] = client
         new_conf['skew'] = config['skew']
         new_conf['num_keys'] = config['num_keys']    
         new_conf['my_addr'] = my_addr
         new_conf['head_addr'] = head_addr
         new_conf['chain_addr'] = chain_addr
+        new_conf['results_path'] = results_path
+        new_conf['experiment_num'] = experiment_num
         json.dump(new_conf, client_conf)
+    return client_config_path
 
 def ssh_args(command, remote_user, remote_host):
     return ["ssh", '-o', 'StrictHostKeyChecking=no',
@@ -181,4 +231,4 @@ if __name__ == '__main__':
         sys.exit(1)
     with open(sys.argv[1]) as f:
         config = json.load(f)
-        get_init_cluster(config)
+        experiment_driver(config)
