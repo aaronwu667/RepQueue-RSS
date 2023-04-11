@@ -4,7 +4,7 @@ use super::{
     write_utils::{update_view, update_view_tail},
 };
 use super::{ManagerNodeState, TransactionEntry, TxnStatus};
-use crate::{debug, is_sorted};
+use crate::debug;
 use crate::{Connection, NodeStatus};
 use proto::common_decls::Csn;
 use proto::{
@@ -32,7 +32,7 @@ impl TransactionService {
         state: Arc<ManagerNodeState>,
         mut exec_append_ch: mpsc::Receiver<ExecAppendTransactRequest>,
         pred: Option<Arc<Connection>>,
-        client_conns: Arc<ChannelPool<u64>>
+        client_conns: Arc<ChannelPool<u64>>,
     ) {
         loop {
             let req = exec_append_ch
@@ -90,7 +90,13 @@ impl TransactionService {
                     res: req.res,
                     csn: Some(csn),
                 };
-                send_client_rpc(RPCRequest::SessResponseWrite(resp), cid, addr, client_conns.clone()).await;
+                send_client_rpc(
+                    RPCRequest::SessResponseWrite(resp),
+                    cid,
+                    addr,
+                    client_conns.clone(),
+                )
+                .await;
             }
         }
     }
@@ -331,7 +337,7 @@ impl TransactionService {
         schd_tx: mpsc::Sender<AppendTransactRequest>,
         state: Arc<ManagerNodeState>,
         node_state: Arc<NodeStatus>,
-        client_conns: Arc<ChannelPool<u64>>
+        client_conns: Arc<ChannelPool<u64>>,
     ) {
         let mut log_ind = 1;
         // queues for deciding when to service
@@ -339,94 +345,90 @@ impl TransactionService {
         let mut log_queue = BTreeMap::<u64, AppendTransactRequest>::new();
 
         loop {
-            let new_req = new_req_rx.recv().await;
-            if let Some(new_req) = new_req {
-                let csn = new_req.csn.as_ref().expect("Missing csn");
-                match client_queue.entry(csn.cid) {
-                    Occupied(mut o) => {
-                        let (greatest_csn, queue) = o.get_mut();
-                        if csn.sn == *greatest_csn + 1 {
-                            // If no reordering, check for log reordering and service
+            let new_req = new_req_rx.recv().await.expect("Append req channel closed");
+            let csn = new_req.csn.as_ref().expect("Missing csn");
+            match client_queue.entry(csn.cid) {
+                Occupied(mut o) => {
+                    let (greatest_csn, queue) = o.get_mut();
+                    if csn.sn == *greatest_csn + 1 {
+                        // If no reordering, check for log reordering and service
+                        Self::log_send_or_queue(
+                            &schd_tx,
+                            new_req,
+                            &mut log_ind,
+                            &mut log_queue,
+                            node_state.clone(),
+                        )
+                        .await;
+                        *greatest_csn += 1;
+
+                        // see what else can be serviced
+                        let mut curr_sn = *greatest_csn;
+                        let mut unblocked_reqs = Vec::with_capacity(queue.len() / 3);
+                        for sn in queue.keys() {
+                            if *sn == curr_sn + 1 {
+                                unblocked_reqs.push(*sn);
+                                curr_sn += 1;
+                            } else {
+                                break;
+                            }
+                        }
+
+                        for k in unblocked_reqs.into_iter() {
+                            let client_queue_head = queue.remove(&k).unwrap();
                             Self::log_send_or_queue(
                                 &schd_tx,
-                                new_req,
+                                client_queue_head,
                                 &mut log_ind,
                                 &mut log_queue,
                                 node_state.clone(),
                             )
                             .await;
-                            *greatest_csn += 1;
-
-                            // see what else can be serviced
-                            let mut curr_sn = *greatest_csn;
-                            let mut unblocked_reqs = Vec::with_capacity(queue.len() / 3);
-                            for sn in queue.keys() {
-                                if *sn == curr_sn + 1 {
-                                    unblocked_reqs.push(*sn);
-                                    curr_sn += 1;
-                                } else {
-                                    break;
-                                }
-                            }
-
-                            for k in unblocked_reqs.into_iter() {
-                                let client_queue_head = queue.remove(&k).unwrap();
-                                Self::log_send_or_queue(
-                                    &schd_tx,
-                                    client_queue_head,
-                                    &mut log_ind,
-                                    &mut log_queue,
-                                    node_state.clone(),
-                                )
-                                .await;
-                            }
-                            *greatest_csn = curr_sn;
-                        } else if csn.sn <= *greatest_csn {
-                            // Have seen this sequence number before
-                            // Check if we have a response ready
-                            let ongoing_txns = state.ongoing_txs.lock().await;
-                            if let (NodeStatus::Head(_), Some(csn_map)) =
-                                (&*node_state, ongoing_txns.get(&csn.cid))
-                            {
-                                if let Some(TxnStatus::Done(txn_entry)) = csn_map.get(&csn.sn) {
-                                    let resp = SessionRespWriteRequest {
-                                        csn: Some(csn.clone()),
-                                        res: txn_entry.result.clone(),
-                                    };
-                                    tokio::spawn(send_client_rpc(
-                                        RPCRequest::SessResponseWrite(resp),
-                                        csn.cid,
-                                        new_req.addr,
-                                        client_conns.clone()
-                                    ));
-                                }
-                            }
-                        } else {
-                            // Otherwise, put onto queue for waiting
-                            queue.insert(csn.sn, new_req);
                         }
-                    }
-                    Vacant(v) => {
-                        let mut last_exec = 0;
-                        let mut new_map = BTreeMap::new();
-                        if csn.sn == 1 {
-                            Self::log_send_or_queue(
-                                &schd_tx,
-                                new_req,
-                                &mut log_ind,
-                                &mut log_queue,
-                                node_state.clone(),
-                            )
-                            .await;
-                            last_exec = 1;
-                        } else {
-                            new_map.insert(csn.sn, new_req);
+                        *greatest_csn = curr_sn;
+                    } else if csn.sn <= *greatest_csn {
+                        // Have seen this sequence number before
+                        // Check if we have a response ready
+                        let ongoing_txns = state.ongoing_txs.lock().await;
+                        if let (NodeStatus::Head(_), Some(csn_map)) =
+                            (&*node_state, ongoing_txns.get(&csn.cid))
+                        {
+                            if let Some(TxnStatus::Done(txn_entry)) = csn_map.get(&csn.sn) {
+                                let resp = SessionRespWriteRequest {
+                                    csn: Some(csn.clone()),
+                                    res: txn_entry.result.clone(),
+                                };
+                                tokio::spawn(send_client_rpc(
+                                    RPCRequest::SessResponseWrite(resp),
+                                    csn.cid,
+                                    new_req.addr,
+                                    client_conns.clone(),
+                                ));
+                            }
                         }
-                        v.insert((last_exec, new_map));
+                    } else {
+                        // Otherwise, put onto queue for waiting
+                        queue.insert(csn.sn, new_req);
                     }
                 }
-            } else {
-                panic!("Append req channel closed");
+                Vacant(v) => {
+                    let mut last_exec = 0;
+                    let mut new_map = BTreeMap::new();
+                    if csn.sn == 1 {
+                        Self::log_send_or_queue(
+                            &schd_tx,
+                            new_req,
+                            &mut log_ind,
+                            &mut log_queue,
+                            node_state.clone(),
+                        )
+                        .await;
+                        last_exec = 1;
+                    } else {
+                        new_map.insert(csn.sn, new_req);
+                    }
+                    v.insert((last_exec, new_map));
+                }
             }
         }
     }

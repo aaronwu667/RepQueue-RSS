@@ -32,8 +32,7 @@ struct ClusterConnections {
     chain_node: Channel,
 }
 
-type CallbackChannelRead = oneshot::Sender<(u64, HashMap<String, Option<String>>)>;
-type CallbackChannelWrite = oneshot::Sender<(u64, Option<HashMap<String, Option<String>>>)>;
+type CallbackChannel = oneshot::Sender<(u64, Option<HashMap<String, Option<String>>>)>;
 
 // TODO (high priority): Client side retries, sessions
 pub struct ClientSession {
@@ -44,8 +43,8 @@ pub struct ClientSession {
     rw_in_prog: Arc<RwLock<BTreeSet<u64>>>,
     // upper_bounds: Arc<Mutex<BTreeMap<u64, u64>>>,
     read_results: Arc<RwLock<HashMap<u64, Arc<Mutex<ReadResult>>>>>,
-    read_callbacks: Arc<Mutex<HashMap<u64, CallbackChannelRead>>>,
-    write_callbacks: Arc<Mutex<HashMap<u64, CallbackChannelWrite>>>,
+    read_callbacks: Arc<Mutex<HashMap<u64, CallbackChannel>>>,
+    write_callbacks: Arc<Mutex<HashMap<u64, CallbackChannel>>>,
     cluster_conns: ClusterConnections,
     my_addr: String,
 }
@@ -94,9 +93,9 @@ impl ClientSession {
     pub async fn read_only_transaction(
         &self,
         txn: Vec<String>,
-    ) -> (u64, HashMap<String, Option<String>>) {
+    ) -> (u64, Option<HashMap<String, Option<String>>>) {
         if txn.is_empty() {
-            return (0, HashMap::new());
+            return (0, None);
         }
 
         let permit = self
@@ -219,16 +218,16 @@ impl ClientSession {
 pub struct ClientSessionServer {
     rw_in_prog: Arc<RwLock<BTreeSet<u64>>>,
     read_results: Arc<RwLock<HashMap<u64, Arc<Mutex<ReadResult>>>>>,
-    read_callbacks: Arc<Mutex<HashMap<u64, CallbackChannelRead>>>,
-    write_callbacks: Arc<Mutex<HashMap<u64, CallbackChannelWrite>>>,
+    read_callbacks: Arc<Mutex<HashMap<u64, CallbackChannel>>>,
+    write_callbacks: Arc<Mutex<HashMap<u64, CallbackChannel>>>,
 }
 
 impl ClientSessionServer {
     fn new(
         rw_in_prog: Arc<RwLock<BTreeSet<u64>>>,
         read_results: Arc<RwLock<HashMap<u64, Arc<Mutex<ReadResult>>>>>,
-        read_callbacks: Arc<Mutex<HashMap<u64, CallbackChannelRead>>>,
-        write_callbacks: Arc<Mutex<HashMap<u64, CallbackChannelWrite>>>,
+        read_callbacks: Arc<Mutex<HashMap<u64, CallbackChannel>>>,
+        write_callbacks: Arc<Mutex<HashMap<u64, CallbackChannel>>>,
     ) -> Self {
         Self {
             rw_in_prog,
@@ -292,9 +291,11 @@ impl ClientLibrary for ClientSessionServer {
                 };
                 drop(read_callbacks);
 
-                if ch.send((sn, complete_res.data.clone())).is_err() {
-                    panic!("Read receiver dropped")
-                }
+                if complete_res.data.is_empty() {
+                    ch.send((sn, None)).expect("Read receiver dropped");
+                } else {
+                    ch.send((sn, Some(complete_res.data.clone()))).expect("Read receiver dropped");
+                }                
             }
         }
         Ok(Response::new(Empty {}))
