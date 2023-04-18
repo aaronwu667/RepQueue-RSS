@@ -8,7 +8,6 @@ use crate::debug;
 use proto::manager_net::ReadOnlyTransactRequest;
 use proto::shard_net::ExecReadRequest;
 use replication::channel_pool::ChannelPool;
-use std::cmp::max;
 use std::collections::hash_map;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -64,32 +63,21 @@ impl TransactionService {
 
         let mut read_meta = state.read_meta.lock().await;
         if let Some(constraint) = request.lsn_const {
-            fence = max(fence, constraint);
-            match read_meta.entry(csn.cid) {
-                hash_map::Entry::Occupied(mut o) => {
-                    if csn.sn > o.get().0 {
-                        o.insert((csn.sn, fence));
-                    }
-                }
-                hash_map::Entry::Vacant(v) => {
-                    v.insert((csn.sn, fence));
+            fence = constraint;
+        }
+        match read_meta.entry(csn.cid) {
+            hash_map::Entry::Occupied(mut o) => {
+                if csn.sn > o.get().0 {
+                    o.insert((csn.sn, fence));
+                } else if request.lsn_const.is_none() {
+                    fence = o.get().1;
                 }
             }
-        } else {
-            match read_meta.entry(csn.cid) {
-                hash_map::Entry::Occupied(mut o) => {
-                    if csn.sn <= o.get().0 {
-                        fence = o.get().1;
-                    } else {
-                        fence = max(fence, o.get().1);
-                        o.insert((csn.sn, fence));
-                    }
-                }
-                hash_map::Entry::Vacant(v) => {
-                    v.insert((csn.sn, fence));
-                }
+            hash_map::Entry::Vacant(v) => {
+                v.insert((csn.sn, fence));
             }
         }
+
         // send to cluster
         let num_shards = sub_txns.len();
         for (k, v) in sub_txns.into_iter() {

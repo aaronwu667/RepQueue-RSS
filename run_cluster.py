@@ -11,6 +11,8 @@ def experiment_driver(config):
     for i in range(config['num_experiment_runs']):
         experiment_num = i
         run_experiment(config, results_path, experiment_num)
+    with open(results_path+'/config.json', 'w') as f:
+        json.dump(config, f)
     
 def run_experiment(config, results_path, experiment_num):
     # start cluster
@@ -23,8 +25,7 @@ def run_experiment(config, results_path, experiment_num):
     for i in range(config['num_client_machines']):
         name = config['client_name_format_str'] % i
         hostname = config['client_host_format_str'] % (name, config['experiment_name'], config['project_name'])
-        ip = get_ip_for_server_name(name, config['user'], hostname, config['run_locally'])
-        make_temp_remote(config['user'], hostname, config['experiment_path'])
+        ip = get_ip_for_server_name(name, config['user'], hostname, config['run_locally'])    
         machine_commands = ["cd", config['experiment_path'], ";"]
         for j in range(config['clients_per_machine']):
             ind = j % len(client_chain)
@@ -32,12 +33,17 @@ def run_experiment(config, results_path, experiment_num):
                                           client_chain[0]['cluster'],
                                           client_chain[ind]['cluster'],
                                           results_path, experiment_num, config)
-            client_port += 1
-            machine_commands.append("cargo run --release --bin "
-                                    + config['client_type'] + " -- "
-                                    + conf_path + "&")            
+            client_port += 1            
             if not config['run_locally']:
+                machine_commands.append("cargo run --release --bin "
+                                        + config['client_type'] + " -- "
+                                        + conf_path + "&")
+                make_temp_remote(config['user'], hostname, config['experiment_path'])
                 send_to_remote(config['user'], hostname, local_path, conf_path)
+            else:
+                machine_commands.append("cargo run --release --bin "
+                                        + config['client_type'] + " -- "
+                                        + local_path + "&")
 
         client_mach_commands[hostname] = ' '.join(machine_commands)
         if not config['run_locally']:
@@ -92,8 +98,8 @@ def get_init_cluster(config):
                             "mkdir", "-p", "test_output", ";",
                             "cargo run --release --bin repl_store -- " +
                             addrs['cluster'] + " " + addrs['control'] + "> test_output/raft_%s.log"%i]
+        raft_bin_command = ' '.join(raft_bin_command)
         if not config['run_locally']:
-            raft_bin_command = ' '.join(raft_bin_command)
             run_remote_command_async(raft_bin_command, config['user'], hostname)
         else:
             run_local_command_async(raft_bin_command)
@@ -121,8 +127,8 @@ def get_init_cluster(config):
                              "mkdir", "-p", "test_output", ";",
                              "cargo run --release --bin txn_manager -- " + 
                              addrs['cluster'] + " " + addrs['control'] + "> test_output/chain_%s.log"%i]
+        chain_bin_command = ' '.join(chain_bin_command)
         if not config['run_locally']:
-            chain_bin_command = ' '.join(chain_bin_command)
             run_remote_command_async(chain_bin_command, config['user'], hostname)
         else:
             run_local_command_async(chain_bin_command)  
@@ -151,8 +157,8 @@ def get_init_cluster(config):
                            "mkdir", "-p", "test_output", ";",
                            "cargo run --release --bin control -- " + config_file_path + "> test_output/control.log"]
     control_bin_command = ' '.join(control_bin_command)
-    make_temp_remote(config['user'], control_hostname, config['experiment_path'])
     if not config['run_locally']:
+        make_temp_remote(config['user'], control_hostname, config['experiment_path'])
         send_to_remote(config['user'], control_hostname, local_file_path, config_file_path)
         run_remote_command_sync(control_bin_command, config['user'], control_hostname)
     else:
@@ -175,8 +181,8 @@ def kill_cluster(config):
     else:
         run_local_command_sync(kill_remote_process_by_name_cmd("repl_store"))
         run_local_command_sync(kill_remote_process_by_name_cmd("txn_manager"))
-        kill_remote_process_by_name("control", config['user'], hostname)           
-        kill_remote_process_by_name(config['client_type'], config['user'], hostname)
+        run_local_command_sync(kill_remote_process_by_name_cmd("control"))
+        run_local_command_sync(kill_remote_process_by_name_cmd(config['client_type']))
     
 
     
