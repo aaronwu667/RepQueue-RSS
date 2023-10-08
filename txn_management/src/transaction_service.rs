@@ -74,9 +74,9 @@ impl TransactionEntry {
 
 struct ManagerNodeState {
     ongoing_txs: Mutex<HashMap<u64, BTreeMap<u64, TxnStatus>>>, // cid |-> (csn, statuses)
-    txn_queues: RwLock<HashMap<u32, (u64, VecDeque<u64>)>>, // shard group id |-> (lastExec, queue), !!! transactions should start with csn 1 NOT 0 !!!
+    txn_queues: RwLock<HashMap<u32, (u64, VecDeque<u64>)>>, // shard group id |-> (lastExec, queue)
     ind_to_sh: Mutex<HashMap<u64, (Csn, HashSet<u32>)>>,    // log ind |-> (csn, shards)
-    ssn_map: Mutex<HashMap<u32, u64>>, // !!! default value for SSN map should be 1 NOT 0, initialized by client !!!
+    ssn_map: Mutex<HashMap<u32, u64>>, 
     num_shards: u32,                   // should agree with the above
     read_meta: Mutex<HashMap<u64, (u64, u64)>>, // cid |-> (max csn, lsn)
 }
@@ -104,9 +104,10 @@ impl ManagerNodeState {
 }
 
 pub struct TransactionService {
+    // TODO (high priority): flush messages
+    // TODO (med priority): fair queueing for read-write transactions
     // TODO (low priority): timeout checking
     // TODO (low priority): dynamic reconfig and failover
-    // TODO (med priority): fair queueing for read-write transactions
     state: Arc<ManagerNodeState>,
     cluster_conns: Arc<ChannelPool<u32>>,
     new_req_tx: mpsc::Sender<AppendTransactRequest>,

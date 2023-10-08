@@ -46,7 +46,6 @@ impl ClusterManagementService for ClusterManager {
         &self,
         request: Request<InitNodeRequest>,
     ) -> Result<Response<Empty>, Status> {
-        tracing_subscriber::fmt::init();
         // make sure we are not initializing twice
         let mut raft_state = self.raft_state.lock().await;
         if raft_state.is_some() {

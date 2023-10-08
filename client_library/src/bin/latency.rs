@@ -8,7 +8,6 @@ use std::{
     fs::{self, File},
     io::Write,
     sync::Arc,
-    time,
 };
 use tonic::transport::Server;
 
@@ -23,6 +22,7 @@ struct Conf {
     client_machine: u32,
     client_proc: u32,
     experiment_num: u32,
+    client_concurrency: usize,
 }
 
 enum TxnType {
@@ -48,7 +48,13 @@ async fn main() {
     let head_addr = get_uri(&conf_values.head_addr);
     let chain_addr = get_uri(&conf_values.chain_addr);
 
-    let (client_lib, server) = ClientSession::new(500, my_serv_addr, head_addr, chain_addr).await;
+    let (client_lib, server) = ClientSession::new(
+        conf_values.client_concurrency,
+        my_serv_addr,
+        head_addr,
+        chain_addr,
+    )
+    .await;
     let client_lib = Arc::new(client_lib);
     // start client server in another task
     tokio::spawn(async move {
@@ -65,10 +71,10 @@ async fn main() {
     // Create transactions for experiment
     let zipf = zipf::ZipfDistribution::new(conf_values.num_keys, conf_values.skew).unwrap();
     let mut rng = rand::thread_rng();
-    let num_txns = 510; // 10 transactions to warm up
+    let num_txns = 1010; // 10 transactions to warm up
     let mut txns: Vec<HashMap<String, TransactionOp>> = Vec::with_capacity(num_txns);
     for _ in 0..num_txns {
-        let num_keys = 10; // should probably ask about this
+        let num_keys = 10;
         let mut txn = HashMap::new();
         for _ in 0..num_keys {
             let key = zipf.sample(&mut rng).to_string();
@@ -77,15 +83,39 @@ async fn main() {
         }
         txns.push(txn);
     }
+    /*
+        // start experiment and collect metrics
+        let num_concurrent = conf_values.client_concurrency;
+        let mut futs = Vec::with_capacity(num_concurrent);
+        let mut res = BTreeSet::new();
+        for txn in txns.into_iter() {
+            if futs.len() == num_concurrent {
+                let fut_res: Vec<Result<(u64, u128), _>> = futures::future::join_all(futs).await;
+                for e in fut_res.into_iter() {
+                    res.insert(e.unwrap());
+                }
+                futs = Vec::with_capacity(num_concurrent);
+            }
+            futs.push(tokio::spawn({
+                let client_lib = client_lib.clone();
+                async move {
+                    let start = time::Instant::now();
+                    let (cwsn, _) = client_lib.read_write_transaction(txn).await;
+                    (cwsn, start.elapsed().as_millis())
+                }
+            }));
+        }
+        for e in futures::future::join_all(futs).await.into_iter() {
+            res.insert(e.unwrap());
+    }
+        */
 
-    // start experiment and collect metrics
     let futs = txns.into_iter().map(|req| {
         tokio::spawn({
             let client_lib = client_lib.clone();
             async move {
-                let start = time::Instant::now();
-                let (cwsn, _) = client_lib.read_write_transaction(req).await;
-                (cwsn, start.elapsed().as_millis())
+                let (cwsn, dur, _) = client_lib.read_write_transaction(req).await;
+                (cwsn, dur.as_millis())
             }
         })
     });
@@ -119,11 +149,11 @@ async fn main() {
     // start mixed read-only and read-write workload
     let zipf = zipf::ZipfDistribution::new(conf_values.num_keys, conf_values.skew).unwrap();
     let mut rng = rand::thread_rng();
-    let num_txns = 500;
+    let num_txns = 700;
     let mut txns: Vec<TxnType> = Vec::with_capacity(num_txns);
     for i in 0..num_txns {
-        let num_keys = 10; // should probably ask about this
-        if i % 10 == 0 {
+        let num_keys = 10;
+        if i % 10 == 0 && i != 0 {
             let mut txn = HashMap::new();
             for _ in 0..num_keys {
                 let key = zipf.sample(&mut rng).to_string();
@@ -140,22 +170,54 @@ async fn main() {
             txns.push(TxnType::RO(txn));
         }
     }
+    /*
+    let mut futs = Vec::with_capacity(num_concurrent);
+    let mut res = BTreeSet::new();
+    for (i, req) in txns.into_iter().enumerate() {
+        if futs.len() == num_concurrent {
+            let fut_res: Vec<Result<(usize, u128), _>> = futures::future::join_all(futs).await;
+            for e in fut_res.into_iter() {
+                res.insert(e.unwrap());
+            }
+            futs = Vec::with_capacity(num_concurrent);
+        }
+        match req {
+            TxnType::RW(req) => futs.push(tokio::spawn({
+                let client_lib = client_lib.clone();
+                async move {
+                    let start = time::Instant::now();
+                    client_lib.read_write_transaction(req).await;
+                    (i, start.elapsed().as_millis())
+                }
+            })),
+            TxnType::RO(req) => futs.push(tokio::spawn({
+                let client_lib = client_lib.clone();
+                async move {
+                    let start = time::Instant::now();
+                    client_lib.read_only_transaction(req).await;
+                    (i, start.elapsed().as_millis())
+                }
+            })),
+        }
+    }
+    for e in futures::future::join_all(futs).await.into_iter() {
+        res.insert(e.unwrap());
+    }
+    */
 
     let futs = txns.into_iter().enumerate().map(|(i, req)| match req {
         TxnType::RW(req) => tokio::spawn({
             let client_lib = client_lib.clone();
             async move {
-                let start = time::Instant::now();
-                client_lib.read_write_transaction(req).await;
-                (i, start.elapsed().as_millis())
+                let (_, dur, _) = client_lib.read_write_transaction(req).await;
+                (i, dur.as_millis())
             }
         }),
         TxnType::RO(req) => tokio::spawn({
             let client_lib = client_lib.clone();
             async move {
-                let start = time::Instant::now();
-                client_lib.read_only_transaction(req).await;
-                (i, start.elapsed().as_millis())
+                let (_, dur, _) = client_lib.read_only_transaction(req).await;
+                (i, dur.as_millis())
             }
         }),
     });

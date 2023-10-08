@@ -130,7 +130,7 @@ impl RaftStorage<StoreRequest, StoreResponse> for MemStore {
         let log = &logger.log;
 
         let last_purged_log_id = logger.last_purged;
-        let last = log.iter().rev().next().map(|(_, ent)| ent.log_id);
+        let last = log.iter().next_back().map(|(_, ent)| ent.log_id);
 
         let last = match last {
             None => last_purged_log_id,

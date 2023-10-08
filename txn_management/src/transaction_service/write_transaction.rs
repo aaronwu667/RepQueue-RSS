@@ -58,6 +58,7 @@ impl TransactionService {
             drop(txn_queues);
 
             // update ongoing transactions
+            debug("before ongoing txns".to_owned());
             let mut ongoing_txns = state.ongoing_txs.lock().await;
             let transaction = ongoing_txns
                 .get_mut(&csn.cid)
@@ -67,6 +68,7 @@ impl TransactionService {
             let addr = match transaction {
                 TxnStatus::InProg(e) => {
                     let copy_addr = e.addr.to_owned();
+                    debug(format!("ExecAppend {:?}", e));
                     *transaction = TxnStatus::Done(TransactionEntry::new_res(
                         e.result.clone(),
                         e.ind,
@@ -80,6 +82,7 @@ impl TransactionService {
                 }
             };
             drop(ongoing_txns);
+            debug("after ongoing txns".to_owned());
 
             // send result to client if head, otherwise continue backwards ack
             if let Some(ref ch) = pred {
@@ -242,6 +245,7 @@ impl TransactionService {
                             panic!("All watch receivers dropped")
                         }
                     }
+
                     o.get_mut().retain(|k, _| *k >= released_req.ack_bound);
                 }
                 Vacant(v) => {

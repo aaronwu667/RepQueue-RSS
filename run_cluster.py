@@ -7,7 +7,12 @@ from datetime import datetime
 
 def experiment_driver(config):
     now = datetime.now()
-    results_path = config['experiment_path'] + "/results/" + now.strftime("%d-%m-%Y-%H-%M-%S")
+    results_path = config['experiment_path'] + "/results/"
+    if config['results_folder'] == None:
+        results_path += now.strftime("%d-%m-%Y-%H-%M-%S")
+    else:
+        results_path += config['results_folder']
+        
     for i in range(config['num_experiment_runs']):
         experiment_num = i
         run_experiment(config, results_path, experiment_num)
@@ -17,7 +22,7 @@ def experiment_driver(config):
 def run_experiment(config, results_path, experiment_num):
     # start cluster
     raft_servers, chain_servers = get_init_cluster(config)    
-    
+    time.sleep(5)
     # run clients, static round robin load balancing over chain
     client_port = 8001
     client_chain = chain_servers[:-1]
@@ -43,7 +48,7 @@ def run_experiment(config, results_path, experiment_num):
             else:
                 machine_commands.append("cargo run --release --bin "
                                         + config['client_type'] + " -- "
-                                        + local_path + "&")
+                                        + local_path )
 
         client_mach_commands[hostname] = ' '.join(machine_commands)
         if not config['run_locally']:
@@ -134,7 +139,7 @@ def get_init_cluster(config):
             run_local_command_async(chain_bin_command)  
             port += 1          
 
-    time.sleep(20)
+    time.sleep(5)
     
     # modify json for control plane config spec
     config_file_path = config['experiment_path'] + "/temp/control_config.json"
@@ -203,6 +208,7 @@ def gen_client_config(machine, client,
         new_conf['chain_addr'] = chain_addr
         new_conf['results_path'] = results_path
         new_conf['experiment_num'] = experiment_num
+        new_conf['client_concurrency'] = config['client_concurrency']
         json.dump(new_conf, client_conf)
     return local_config_path, client_config_path
 

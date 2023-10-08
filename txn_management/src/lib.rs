@@ -11,7 +11,7 @@ pub use proto::chain_management_net::InitNodeRequest;
 pub mod chain_management_service;
 pub mod transaction_service;
 
-const DEBUG: bool = false;
+const DEBUG: bool = true;
 
 fn debug(a: String) {
     if DEBUG {

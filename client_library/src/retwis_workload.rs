@@ -5,6 +5,7 @@ use rand::prelude::Distribution;
 use rand::rngs::ThreadRng;
 use rand::Rng;
 use std::collections::HashMap;
+use std::time::Duration;
 
 pub enum RetwisTransactionType {
     Follow,
@@ -18,7 +19,7 @@ pub enum RetwisTransaction {
 }
 
 impl RetwisTransaction {
-    pub async fn eval(self, cs: &ClientSession) -> (u64, Option<HashMap<String, Option<String>>>) {
+    pub async fn eval(self, cs: &ClientSession) -> (u64, Duration, Option<HashMap<String, Option<String>>>) {
         match self {
             Self::RO(vec) => cs.read_only_transaction(vec).await,
             Self::RW(map) => cs.read_write_transaction(map).await,

@@ -12,7 +12,7 @@ use proto::{
 use rand::Rng;
 use std::{
     collections::{BTreeSet, HashMap},
-    sync::Arc,
+    sync::Arc, time::{Duration, self},
 };
 use tokio::sync::{oneshot, Mutex, RwLock, Semaphore};
 use tonic::{
@@ -93,9 +93,9 @@ impl ClientSession {
     pub async fn read_only_transaction(
         &self,
         txn: Vec<String>,
-    ) -> (u64, Option<HashMap<String, Option<String>>>) {
+    ) -> (u64, Duration, Option<HashMap<String, Option<String>>>) {
         if txn.is_empty() {
-            return (0, None);
+            return (0, Duration::default(), None);
         }
 
         let permit = self
@@ -142,6 +142,7 @@ impl ClientSession {
             addr: self.my_addr.clone(),
         };
 
+        let start = time::Instant::now();
         if let Err(e) = client.read_only_transact(req).await {
             panic!("Sending to chain node failed {}", e)
         }
@@ -149,8 +150,9 @@ impl ClientSession {
         // wait for result
         match recv.await {
             Ok(res) => {
+                let dur = start.elapsed();
                 drop(permit);
-                res
+                (res.0, dur, res.1)
             }
             Err(e) => panic!("Receiving from callback failed {}", e),
         }
@@ -159,9 +161,9 @@ impl ClientSession {
     pub async fn read_write_transaction(
         &self,
         txn: HashMap<String, TransactionOp>,
-    ) -> (u64, Option<HashMap<String, Option<String>>>) {
+    ) -> (u64, Duration, Option<HashMap<String, Option<String>>>) {
         if txn.is_empty() {
-            return (0, None);
+            return (0, Duration::default(), None);
         }
 
         let permit = self
@@ -199,6 +201,7 @@ impl ClientSession {
             addr: self.my_addr.clone(),
         };
 
+        let start = time::Instant::now();
         if let Err(e) = client.append_transact(req).await {
             panic!("Sending to head failed {}", e)
         }
@@ -206,8 +209,9 @@ impl ClientSession {
         // wait for result
         match recv.await {
             Ok(res) => {
+                let dur = start.elapsed();
                 drop(permit);
-                res
+                (res.0, dur, res.1)
             }
             Err(e) => panic!("Receiving from callback failed {}", e),
         }
@@ -294,8 +298,9 @@ impl ClientLibrary for ClientSessionServer {
                 if complete_res.data.is_empty() {
                     ch.send((sn, None)).expect("Read receiver dropped");
                 } else {
-                    ch.send((sn, Some(complete_res.data.clone()))).expect("Read receiver dropped");
-                }                
+                    ch.send((sn, Some(complete_res.data.clone())))
+                        .expect("Read receiver dropped");
+                }
             }
         }
         Ok(Response::new(Empty {}))
