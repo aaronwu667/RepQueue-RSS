@@ -7,3 +7,5 @@ members = [
 "client_library",
 "control"
 ]
+
+resolver = "2"
