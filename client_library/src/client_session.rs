@@ -12,7 +12,8 @@ use proto::{
 use rand::Rng;
 use std::{
     collections::{BTreeSet, HashMap},
-    sync::Arc, time::{Duration, self},
+    sync::{atomic::AtomicU64, atomic::Ordering, Arc},
+    time::{self, Duration},
 };
 use tokio::sync::{oneshot, Mutex, RwLock, Semaphore};
 use tonic::{
@@ -37,8 +38,8 @@ type CallbackChannel = oneshot::Sender<(u64, Option<HashMap<String, Option<Strin
 // TODO (high priority): Client side retries, sessions
 pub struct ClientSession {
     cid: u64,
-    cwsn: Mutex<u64>,
-    crsn: Mutex<u64>,
+    cwsn: AtomicU64,
+    crsn: AtomicU64,
     max_concurrent: Arc<Semaphore>,
     rw_in_prog: Arc<RwLock<BTreeSet<u64>>>,
     // upper_bounds: Arc<Mutex<BTreeMap<u64, u64>>>,
@@ -76,8 +77,8 @@ impl ClientSession {
         (
             Self {
                 cid: rng.gen(),
-                cwsn: Mutex::new(0),
-                crsn: Mutex::new(0),
+                cwsn: AtomicU64::new(0),
+                crsn: AtomicU64::new(0),
                 max_concurrent: Arc::new(Semaphore::new(max_concurrency)),
                 rw_in_prog: rw_in_prog.clone(),
                 read_results: read_results.clone(),
@@ -104,10 +105,7 @@ impl ClientSession {
             .await
             .expect("Semaphore acquisition error");
 
-        let mut crsn = self.crsn.lock().await;
-        *crsn += 1;
-        let my_crsn = *crsn;
-        drop(crsn);
+        let my_crsn = self.crsn.fetch_add(1, Ordering::SeqCst) + 1;
 
         // write dependency
         let rw_in_prog = self.rw_in_prog.read().await;
@@ -172,10 +170,7 @@ impl ClientSession {
             .await
             .expect("Semaphore acquisition error");
 
-        let mut cwsn = self.cwsn.lock().await;
-        *cwsn += 1;
-        let my_cwsn = *cwsn;
-        drop(cwsn);
+        let my_cwsn = self.cwsn.fetch_add(1, Ordering::SeqCst) + 1;
 
         let mut rw_in_prog = self.rw_in_prog.write().await;
         rw_in_prog.insert(my_cwsn);
